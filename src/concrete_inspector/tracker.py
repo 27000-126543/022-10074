@@ -286,6 +286,44 @@ class IssueTracker:
             return ""
         return str(filepath)
 
+    def save_rolling_action_csv(self, result: TrackingResult, output_dir: str = ".",
+                                filename: str = None) -> str:
+        """导出与list命令完全一致的21列整改清单CSV，方便项目部滚动填写下周继续用
+        包含：still_open(仍未整改) + false_resolved(假整改) + new_issues(本周新增)
+        """
+        from .reporter import ReportGenerator
+
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        merged_records: Dict[str, PouringRecord] = {}
+        historical_issues_map: Dict[str, HistoricalIssue] = {}
+
+        for hi, issue, record in result.false_resolved:
+            key = f"{record.record_id}||{issue.issue_type.value}"
+            historical_issues_map[key] = hi
+            if record.record_id not in merged_records:
+                merged_records[record.record_id] = record
+
+        for hi, issue, record in result.still_open:
+            key = f"{record.record_id}||{issue.issue_type.value}"
+            historical_issues_map[key] = hi
+            if record.record_id not in merged_records:
+                merged_records[record.record_id] = record
+
+        for issue, record in result.new_issues:
+            if record.record_id not in merged_records:
+                merged_records[record.record_id] = record
+
+        records = list(merged_records.values())
+        records.sort(key=lambda r: (r.building or "", r.pouring_date or datetime.min))
+
+        reporter = ReportGenerator(str(out_dir))
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"滚动整改清单_{timestamp}.csv"
+        return reporter.save_action_csv(records, filename=filename, historical_issues=historical_issues_map)
+
     def _write_issue_rows(self, writer, items, include_history=False):
         headers = ["序号", "记录编号", "楼栋", "部位", "强度等级", "浇筑日期",
                    "监理员", "问题类型", "严重程度", "问题详情", "整改建议", "责任岗位",

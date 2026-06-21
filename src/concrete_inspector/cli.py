@@ -455,11 +455,11 @@ def weekly_report(project, start_date, end_date, output, fmt, rules, historical_
     click.echo("")
 
     if fmt in ("csv", "all"):
-        csv_path = reporter.save_weekly_csv(records)
+        csv_path = reporter.save_weekly_csv(records, tracking_result=tracking_result, trend_result=trend_result)
         if csv_path:
             click.echo(f"📄 周报CSV已导出：{csv_path}")
     if fmt in ("excel", "all"):
-        xlsx_path = reporter.save_weekly_excel(records)
+        xlsx_path = reporter.save_weekly_excel(records, tracking_result=tracking_result, trend_result=trend_result)
         if xlsx_path:
             click.echo(f"📊 周报Excel已导出：{xlsx_path}")
 
@@ -540,7 +540,12 @@ def track_report(project, historical, start_date, end_date, output, fmt, rules, 
         if csv_path:
             click.echo(f"")
             click.echo(f"📄 跟踪报告CSV已导出：{csv_path}")
-            click.echo(f"   💡 提示：该CSV可继续发给项目部回填整改情况，下周再用 -i 导入即可滚动跟踪")
+            click.echo(f"   💡 提示：该CSV供领导查看跟踪概览和分类明细")
+        rolling_path = tracker.save_rolling_action_csv(result, str(out_dir))
+        if rolling_path:
+            click.echo(f"")
+            click.echo(f"📋 滚动整改清单CSV已导出：{rolling_path}")
+            click.echo(f"   💡 格式与 list 导出完全一致（21列），可直接发给项目部填写，下周再用 -i 导入即可继续滚动跟踪")
 
     if not no_save:
         from .history import HistoryStore

@@ -605,6 +605,9 @@ class DirectoryScanner:
             if not (date_match and building_match):
                 continue
 
+            if not (position_match or strength_match):
+                continue
+
             score = 0
             detail = []
             if date_match:
@@ -620,7 +623,7 @@ class DirectoryScanner:
                 score += 2
                 detail.append("强度")
 
-            if score < 6:
+            if score < 8:
                 continue
 
             candidates.append((score, r, detail, {
@@ -637,7 +640,7 @@ class DirectoryScanner:
         best_score = candidates[0][0]
         best_candidates = [c for c in candidates if c[0] == best_score]
 
-        if len(best_candidates) > 1 and best_score < 10:
+        if len(best_candidates) > 1:
             return None
 
         return best_candidates[0]

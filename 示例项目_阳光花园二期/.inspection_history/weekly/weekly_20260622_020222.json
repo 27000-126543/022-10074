@@ -1,8 +1,8 @@
 {
   "snapshot_date": "2026-06-22",
-  "project_name": "示例项目_阳光花园二期",
-  "date_range_start": "2024-01-01",
-  "date_range_end": "2024-01-31",
+  "project_name": "",
+  "date_range_start": "",
+  "date_range_end": "",
   "total_records": 16,
   "ok_records": 2,
   "issue_records": 14,
@@ -81,9 +81,9 @@
     "项目质量总监": 9
   },
   "tracking_available": true,
-  "tracking_resolved": 2,
-  "tracking_still_open": 14,
-  "tracking_new": 6,
-  "tracking_false_resolved": 4,
-  "tracking_close_rate": 10.0
+  "tracking_resolved": 0,
+  "tracking_still_open": 19,
+  "tracking_new": 0,
+  "tracking_false_resolved": 5,
+  "tracking_close_rate": 0.0
 }

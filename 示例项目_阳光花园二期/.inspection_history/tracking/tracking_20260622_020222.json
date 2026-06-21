@@ -1,0 +1,11 @@
+{
+  "snapshot_date": "2026-06-22",
+  "total_historical": 24,
+  "total_current": 24,
+  "resolved": 0,
+  "still_open": 19,
+  "new_issues": 0,
+  "false_resolved": 5,
+  "historical_only_closed": 0,
+  "close_rate": 0.0
+}

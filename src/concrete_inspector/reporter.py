@@ -731,7 +731,8 @@ class ReportGenerator:
 
         return "\n".join(lines)
 
-    def save_weekly_csv(self, records: List[PouringRecord], filename: str = None) -> str:
+    def save_weekly_csv(self, records: List[PouringRecord], filename: str = None,
+                        tracking_result=None, trend_result=None) -> str:
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"周报汇总_{timestamp}.csv"
@@ -755,20 +756,59 @@ class ReportGenerator:
                     writer.writerow([k, v])
                 writer.writerow([])
 
-                writer.writerow(["二、楼栋问题排行"])
+                if tracking_result is not None:
+                    tr = tracking_result
+                    writer.writerow(["二、整改闭环统计（与上周对比）"])
+                    writer.writerow(["指标", "数值"])
+                    writer.writerow(["上周问题总数", tr.total_historical])
+                    writer.writerow(["本周问题总数", tr.total_current])
+                    writer.writerow(["✅ 已整改关闭", len(tr.resolved) + len(tr.historical_only_closed)])
+                    writer.writerow(["🟧 仍未整改", len(tr.still_open)])
+                    writer.writerow(["🟩 本周新增", len(tr.new_issues)])
+                    writer.writerow(["🟥 标记整改但仍存在", len(tr.false_resolved)])
+                    if tr.total_historical > 0:
+                        close_rate = (len(tr.resolved) + len(tr.historical_only_closed)) / tr.total_historical * 100
+                        writer.writerow(["整改关闭率", f"{close_rate:.1f}%"])
+                    writer.writerow([])
+
+                    if tr.false_resolved:
+                        writer.writerow(["二-A、标记整改但仍存在 - 按楼栋分布"])
+                        writer.writerow(["楼栋", "项数"])
+                        bld_stat: Dict[str, int] = {}
+                        for _, _, r in tr.false_resolved:
+                            b = r.building or "未识别"
+                            bld_stat[b] = bld_stat.get(b, 0) + 1
+                        for b, c in sorted(bld_stat.items(), key=lambda x: -x[1]):
+                            writer.writerow([b, c])
+                        writer.writerow([])
+
+                    if tr.still_open:
+                        writer.writerow(["二-B、仍未整改 - 按楼栋分布"])
+                        writer.writerow(["楼栋", "项数"])
+                        bld_stat2: Dict[str, int] = {}
+                        for _, _, r in tr.still_open:
+                            b = r.building or "未识别"
+                            bld_stat2[b] = bld_stat2.get(b, 0) + 1
+                        for b, c in sorted(bld_stat2.items(), key=lambda x: -x[1]):
+                            writer.writerow([b, c])
+                        writer.writerow([])
+
+                    writer.writerow(["三、楼栋问题排行"])
+                else:
+                    writer.writerow(["二、楼栋问题排行"])
                 writer.writerow(["排名", "楼栋", "记录数", "问题记录数", "问题总数", "严重问题数", "合格率"])
                 for idx, (b, s) in enumerate(w["楼栋排行"], 1):
                     rate = f"{(1-s['issues']/s['total'])*100:.1f}%" if s['total'] else "0%"
                     writer.writerow([idx, b, s["total"], s["issues"], s["issue_count"], s["critical"], rate])
                 writer.writerow([])
 
-                writer.writerow(["三、监理员问题排行"])
+                writer.writerow(["四、监理员问题排行"])
                 writer.writerow(["排名", "监理员", "记录数", "问题记录数", "问题总数"])
                 for idx, (s, st) in enumerate(w["监理员排行"], 1):
                     writer.writerow([idx, s, st["total"], st["issues"], st["issue_count"]])
                 writer.writerow([])
 
-                writer.writerow(["四、问题类型分布"])
+                writer.writerow(["五、问题类型分布"])
                 writer.writerow(["问题类型", "数量", "占比"])
                 total_issues = sum(v for _, v in w["问题类型分布"])
                 for t, c in w["问题类型分布"]:
@@ -776,7 +816,7 @@ class ReportGenerator:
                     writer.writerow([t, c, pct])
                 writer.writerow([])
 
-                writer.writerow(["五、责任岗位分布"])
+                writer.writerow(["六、责任岗位分布"])
                 writer.writerow(["责任岗位", "问题数", "占比"])
                 total_role = sum(v for _, v in w["责任岗位分布"])
                 for role, c in w["责任岗位分布"]:
@@ -784,7 +824,42 @@ class ReportGenerator:
                     writer.writerow([role, c, pct])
                 writer.writerow([])
 
-                writer.writerow(["六、未匹配清单记录"])
+                if trend_result is not None and trend_result.weeks_count >= 2:
+                    t = trend_result
+                    writer.writerow(["七、多周趋势对比（最近" + str(t.weeks_count) + "周）"])
+                    header = ["周次", "合格率(%)", "问题总数"]
+                    if any(cr is not None for cr in t.close_rate_trend):
+                        header.append("整改关闭率(%)")
+                    writer.writerow(header)
+                    for idx, wk in enumerate(t.weeks):
+                        row = [wk, t.pass_rate_trend[idx], t.total_issues_trend[idx]]
+                        if any(cr is not None for cr in t.close_rate_trend):
+                            cr = t.close_rate_trend[idx]
+                            row.append(cr if cr is not None else "")
+                        writer.writerow(row)
+                    writer.writerow([])
+
+                    if t.issue_type_trends:
+                        writer.writerow(["七-A、主要问题类型变化（TOP8 + 环比）"])
+                        header2 = ["问题类型"] + t.weeks + ["累计"] + ["环比"]
+                        writer.writerow(header2)
+                        sorted_types = sorted(t.issue_type_trends.items(), key=lambda x: -sum(x[1]))[:8]
+                        for itype, counts in sorted_types:
+                            diff = ""
+                            if len(counts) >= 2:
+                                d = counts[-1] - counts[-2]
+                                if d > 0:
+                                    diff = f"↑{d}"
+                                elif d < 0:
+                                    diff = f"↓{abs(d)}"
+                                else:
+                                    diff = "持平"
+                            writer.writerow([itype] + counts + [sum(counts)] + [diff])
+                        writer.writerow([])
+
+                    writer.writerow(["八、未匹配清单记录"])
+                else:
+                    writer.writerow(["七、未匹配清单记录"])
                 writer.writerow(["序号", "楼栋", "部位", "强度等级", "浇筑日期", "监理员"])
                 unmatched = [r for r in records if r.manifest_unmatched]
                 for idx, r in enumerate(unmatched, 1):
@@ -793,10 +868,12 @@ class ReportGenerator:
 
         except Exception as e:
             print(f"周报CSV导出失败：{e}")
+            import traceback; traceback.print_exc()
             return ""
         return str(filepath)
 
-    def save_weekly_excel(self, records: List[PouringRecord], filename: str = None) -> str:
+    def save_weekly_excel(self, records: List[PouringRecord], filename: str = None,
+                          tracking_result=None, trend_result=None) -> str:
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"周报汇总_{timestamp}.xlsx"
@@ -805,7 +882,7 @@ class ReportGenerator:
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font, PatternFill, Alignment
-            from openpyxl.chart import BarChart, Reference
+            from openpyxl.chart import BarChart, Reference, LineChart
         except ImportError:
             print("警告：缺少openpyxl，无法生成Excel周报。")
             return ""
@@ -817,6 +894,9 @@ class ReportGenerator:
         header_font = Font(bold=True, color="FFFFFF")
         sub_fill = PatternFill("solid", fgColor="D9E2F3")
         sub_font = Font(bold=True)
+        red_fill = PatternFill("solid", fgColor="FFC7CE")
+        green_fill = PatternFill("solid", fgColor="C6EFCE")
+        yellow_fill = PatternFill("solid", fgColor="FFEB9C")
 
         ws1 = wb.active
         ws1.title = "周报总览"
@@ -840,7 +920,78 @@ class ReportGenerator:
             row += 1
         row += 1
 
-        ws1.cell(row=row, column=1, value="二、楼栋问题排行").fill = sub_fill
+        if tracking_result is not None:
+            tr = tracking_result
+            ws1.cell(row=row, column=1, value="二、整改闭环统计（与上周对比）").fill = sub_fill
+            ws1.cell(row=row, column=1).font = sub_font
+            row += 1
+            close_items = [
+                ("上周问题总数", tr.total_historical, None),
+                ("本周问题总数", tr.total_current, None),
+                ("✅ 已整改关闭", len(tr.resolved) + len(tr.historical_only_closed), green_fill),
+                ("🟧 仍未整改", len(tr.still_open), yellow_fill),
+                ("🟩 本周新增", len(tr.new_issues), yellow_fill),
+                ("🟥 标记整改但仍存在", len(tr.false_resolved), red_fill),
+            ]
+            if tr.total_historical > 0:
+                close_rate = (len(tr.resolved) + len(tr.historical_only_closed)) / tr.total_historical * 100
+                close_items.append((f"整改关闭率", f"{close_rate:.1f}%", green_fill))
+            header_close = ["指标", "数值"]
+            for col, h in enumerate(header_close, 1):
+                c = ws1.cell(row=row, column=col, value=h)
+                c.fill = header_fill
+                c.font = header_font
+            row += 1
+            for name, val, fill in close_items:
+                c1 = ws1.cell(row=row, column=1, value=name)
+                c2 = ws1.cell(row=row, column=2, value=val)
+                if fill:
+                    c1.fill = fill
+                    c2.fill = fill
+                row += 1
+            row += 1
+
+            if tr.false_resolved:
+                ws1.cell(row=row, column=1, value="二-A、标记整改但仍存在 - 按楼栋分布").fill = sub_fill
+                ws1.cell(row=row, column=1).font = sub_font
+                row += 1
+                for col, h in enumerate(["楼栋", "项数"], 1):
+                    c = ws1.cell(row=row, column=col, value=h)
+                    c.fill = header_fill
+                    c.font = header_font
+                row += 1
+                bld_stat: Dict[str, int] = {}
+                for _, _, r in tr.false_resolved:
+                    b = r.building or "未识别"
+                    bld_stat[b] = bld_stat.get(b, 0) + 1
+                for b, c in sorted(bld_stat.items(), key=lambda x: -x[1]):
+                    ws1.cell(row=row, column=1, value=b)
+                    ws1.cell(row=row, column=2, value=c)
+                    row += 1
+                row += 1
+
+            if tr.still_open:
+                ws1.cell(row=row, column=1, value="二-B、仍未整改 - 按楼栋分布").fill = sub_fill
+                ws1.cell(row=row, column=1).font = sub_font
+                row += 1
+                for col, h in enumerate(["楼栋", "项数"], 1):
+                    c = ws1.cell(row=row, column=col, value=h)
+                    c.fill = header_fill
+                    c.font = header_font
+                row += 1
+                bld_stat2: Dict[str, int] = {}
+                for _, _, r in tr.still_open:
+                    b = r.building or "未识别"
+                    bld_stat2[b] = bld_stat2.get(b, 0) + 1
+                for b, c in sorted(bld_stat2.items(), key=lambda x: -x[1]):
+                    ws1.cell(row=row, column=1, value=b)
+                    ws1.cell(row=row, column=2, value=c)
+                    row += 1
+                row += 1
+
+            ws1.cell(row=row, column=1, value="三、楼栋问题排行").fill = sub_fill
+        else:
+            ws1.cell(row=row, column=1, value="二、楼栋问题排行").fill = sub_fill
         ws1.cell(row=row, column=1).font = sub_font
         row += 1
         headers = ["排名", "楼栋", "记录数", "问题记录数", "问题总数", "严重问题数", "合格率"]
@@ -861,7 +1012,8 @@ class ReportGenerator:
             row += 1
         row += 2
 
-        ws1.cell(row=row, column=1, value="三、监理员问题排行").fill = sub_fill
+        section_no = 4 if tracking_result else 3
+        ws1.cell(row=row, column=1, value=f"{section_no}、监理员问题排行").fill = sub_fill
         ws1.cell(row=row, column=1).font = sub_font
         row += 1
         headers2 = ["排名", "监理员", "记录数", "问题记录数", "问题总数"]
@@ -879,7 +1031,7 @@ class ReportGenerator:
             row += 1
 
         for col in range(1, 8):
-            ws1.column_dimensions[chr(64+col)].width = 16
+            ws1.column_dimensions[chr(64+col)].width = 18
 
         ws2 = wb.create_sheet("问题类型分布")
         ws2.cell(row=1, column=1, value="问题类型").fill = header_fill
@@ -950,6 +1102,83 @@ class ReportGenerator:
             ws4.cell(row=idx, column=6, value=r.supervisor or "")
         for col in range(1, 7):
             ws4.column_dimensions[chr(64+col)].width = 16
+
+        if trend_result is not None and trend_result.weeks_count >= 2:
+            t = trend_result
+            ws5 = wb.create_sheet("多周趋势")
+            r5 = 1
+            ws5.cell(row=r5, column=1, value=f"多周趋势对比（最近{t.weeks_count}周）").font = Font(bold=True, size=13)
+            r5 += 2
+            ws5.cell(row=r5, column=1, value="一、合格率 & 问题总数 & 关闭率趋势").font = sub_font
+            ws5.cell(row=r5, column=1).fill = sub_fill
+            r5 += 1
+            hd_trend = ["周次", "合格率(%)", "问题总数"]
+            if any(cr is not None for cr in t.close_rate_trend):
+                hd_trend.append("整改关闭率(%)")
+            for col, h in enumerate(hd_trend, 1):
+                c = ws5.cell(row=r5, column=col, value=h)
+                c.fill = header_fill
+                c.font = header_font
+            r5 += 1
+            for idx, wk in enumerate(t.weeks):
+                ws5.cell(row=r5, column=1, value=wk)
+                ws5.cell(row=r5, column=2, value=t.pass_rate_trend[idx])
+                ws5.cell(row=r5, column=3, value=t.total_issues_trend[idx])
+                if any(cr is not None for cr in t.close_rate_trend):
+                    cr = t.close_rate_trend[idx]
+                    ws5.cell(row=r5, column=4, value=cr if cr is not None else "")
+                r5 += 1
+
+            try:
+                chart3 = LineChart()
+                chart3.title = "合格率 & 问题总数趋势"
+                chart3.style = 12
+                chart3.y_axis.title = "数值"
+                chart3.x_axis.title = "周次"
+                chart3.height = 10
+                chart3.width = 18
+                data3 = Reference(ws5, min_col=2, min_row=r5 - len(t.weeks) - 1, max_row=r5 - 1, max_col=3)
+                cats3 = Reference(ws5, min_col=1, min_row=r5 - len(t.weeks), max_row=r5 - 1)
+                chart3.add_data(data3, titles_from_data=True)
+                chart3.set_categories(cats3)
+                ws5.add_chart(chart3, "F" + str(r5 - len(t.weeks) - 1))
+            except Exception:
+                pass
+
+            r5 += 2
+            if t.issue_type_trends:
+                ws5.cell(row=r5, column=1, value="二、问题类型变化（TOP8 + 环比）").font = sub_font
+                ws5.cell(row=r5, column=1).fill = sub_fill
+                r5 += 1
+                hd_type = ["问题类型"] + t.weeks + ["累计"] + ["环比"]
+                for col, h in enumerate(hd_type, 1):
+                    c = ws5.cell(row=r5, column=col, value=h)
+                    c.fill = header_fill
+                    c.font = header_font
+                r5 += 1
+                sorted_types = sorted(t.issue_type_trends.items(), key=lambda x: -sum(x[1]))[:8]
+                for itype, counts in sorted_types:
+                    diff = ""
+                    if len(counts) >= 2:
+                        d = counts[-1] - counts[-2]
+                        if d > 0:
+                            diff = f"↑{d}"
+                        elif d < 0:
+                            diff = f"↓{abs(d)}"
+                        else:
+                            diff = "持平"
+                    vals = [itype] + counts + [sum(counts)] + [diff]
+                    for col, val in enumerate(vals, 1):
+                        c = ws5.cell(row=r5, column=col, value=val)
+                        if col == len(vals) and isinstance(diff, str):
+                            if diff.startswith("↑"):
+                                c.fill = red_fill
+                            elif diff.startswith("↓"):
+                                c.fill = green_fill
+                    r5 += 1
+
+            for col in range(1, 4 + len(t.weeks)):
+                ws5.column_dimensions[chr(64+col)].width = 14
 
         wb.save(str(filepath))
         return str(filepath)
