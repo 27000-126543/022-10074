@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "concrete-inspector"
+version = "1.0.0"
+description = "混凝土浇筑旁站批量检查工具 - 用于总包质量部门或监理公司内业人员每周抽查项目资料"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.1.0",
+    "openpyxl>=3.1.0",
+    "Pillow>=10.0.0",
+    "pandas>=2.0.0",
+    "tabulate>=0.9.0",
+]
+
+[project.scripts]
+concrete-inspector = "concrete_inspector.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
