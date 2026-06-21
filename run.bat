@@ -32,22 +32,32 @@ echo ============================================
 echo   准备完成！您现在可以运行以下命令：
 echo ============================================
 echo.
-echo  1. 批量核对（默认检查）：
-echo     concrete-inspector check -p 示例项目_阳光花园二期 -s 2024-01-01 -e 2024-01-31
+echo  【初始化】生成项目自定义规则配置文件：
+echo     concrete-inspector init-rules -o 我的项目_rules.json
+echo     （编辑后放到项目目录，check/filter/list 会自动加载）
 echo.
-echo  2. 按严重程度筛选问题：
+echo  1. 批量核对（推荐首次用 --format all，同时导出TXT/Excel/CSV）：
+echo     concrete-inspector check -p 示例项目_阳光花园二期 -s 2024-01-01 -e 2024-01-31 --format all -o ./reports
+echo     concrete-inspector check -p 示例项目_阳光花园二期 --rules 我的项目_rules.json
+echo.
+echo  2. 按条件筛选问题：
 echo     concrete-inspector filter -p 示例项目_阳光花园二期 --severity high
-echo.
-echo  3. 按楼栋或监理员筛选：
 echo     concrete-inspector filter -p 示例项目_阳光花园二期 --building 3号楼
 echo     concrete-inspector filter -p 示例项目_阳光花园二期 --supervisor 张三
+echo     concrete-inspector filter -p 示例项目_阳光花园二期 --consistency-only   (只看资料不一致)
+echo     concrete-inspector filter -p 示例项目_阳光花园二期 --issue-type missing_photo --issue-type missing_sign
 echo.
-echo  4. 生成整改清单（发给项目部）：
-echo     concrete-inspector list -p 示例项目_阳光花园二期 -o ./reports
+echo  3. 生成整改清单（发项目部，默认同时导出CSV带回填列）：
+echo     concrete-inspector list -p 示例项目_阳光花园二期 -o ./reports --format all
+echo     concrete-inspector list -p 示例项目_阳光花园二期 --format csv   (仅导出CSV)
+echo     concrete-inspector list -p 示例项目_阳光花园二期 --building 1号楼
 echo.
-echo  5. 查看项目信息（楼栋/监理员列表）：
+echo  4. 查看项目信息和规则详情：
 echo     concrete-inspector info -p 示例项目_阳光花园二期
 echo.
-echo 提示：输入 concrete-inspector --help 查看完整帮助
+echo  5. 按日期严格过滤（按最终识别的浇筑日期，范围外不混入）：
+echo     concrete-inspector check -p 示例项目_阳光花园二期 -s 2024-01-10 -e 2024-01-20
+echo.
+echo 提示：输入 concrete-inspector --help 或 concrete-inspector check --help 查看完整帮助
 echo.
 cmd /k

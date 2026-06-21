@@ -3,13 +3,13 @@ import re
 import csv
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 import logging
 
 from PIL import Image
 from PIL.ExifTags import TAGS
 
-from .models import PouringRecord, PhotoRecord
+from .models import PouringRecord, PhotoRecord, FieldSource
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +24,20 @@ PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
 LOG_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt", ".docx", ".doc"}
 
 
-def parse_date_from_string(s: str) -> Optional[datetime]:
-    if not s:
+def parse_date_from_string(s: Any) -> Optional[datetime]:
+    if s is None:
         return None
+    if isinstance(s, datetime):
+        return s
+    try:
+        import math
+        if isinstance(s, float) and math.isnan(s):
+            return None
+    except Exception:
+        pass
     s = str(s).strip()
+    if s == "" or s.lower() == "nan":
+        return None
     for pattern in DATE_PATTERNS:
         m = pattern.search(s)
         if m:
@@ -47,6 +57,19 @@ def parse_date_from_string(s: str) -> Optional[datetime]:
         except ValueError:
             continue
     return None
+
+
+def _is_empty(v: Any) -> bool:
+    if v is None:
+        return True
+    try:
+        import math
+        if isinstance(v, float) and math.isnan(v):
+            return True
+    except Exception:
+        pass
+    s = str(v).strip()
+    return s == "" or s.lower() == "nan"
 
 
 def extract_date_from_filename(filename: str) -> Optional[datetime]:
@@ -69,14 +92,18 @@ def extract_building_from_name(name: str) -> str:
 
 def extract_position_from_name(name: str) -> Optional[str]:
     patterns = [
-        r"(\d+层[一二三四五六七八九十百千万]*[梁板柱墙基承台基础]?)",
-        r"([一二三四五六七八九十百千万]+层[梁板柱墙基承台基础]?)",
-        r"(\d+F\s*[梁板柱墙]?)",
+        r"(\d+层[一二三四五六七八九十百千万]*(?:梁板|梁板柱|柱墙|墙板|基础承台|承台|基础|梁|板|柱|墙)?)",
+        r"([一二三四五六七八九十百千万]+层(?:梁板|梁板柱|柱墙|墙板|基础承台|承台|基础|梁|板|柱|墙)?)",
+        r"(\d+F\s*(?:梁板|梁板柱|柱墙|墙板|基础承台|承台|基础|梁|板|柱|墙)?)",
+        r"(地下室负?\d*层(?:梁板|梁板柱|柱墙|墙板|基础承台|承台|基础|梁|板|柱|墙)?)",
+        r"(地下室负?\d*(?:梁板|梁板柱|柱墙|墙板|基础承台|承台|基础|梁|板|柱|墙)?)",
     ]
     for p in patterns:
         m = re.search(p, name)
         if m:
-            return m.group(1)
+            val = m.group(1)
+            if val and len(val) > 1:
+                return val
     return None
 
 
@@ -136,8 +163,84 @@ def get_photo_datetime(file_path: str) -> Optional[datetime]:
                         continue
     except Exception as e:
         logger.debug(f"读取照片EXIF失败 {file_path}: {e}")
-    mtime = os.path.getmtime(file_path)
-    return datetime.fromtimestamp(mtime)
+    try:
+        mtime = os.path.getmtime(file_path)
+        return datetime.fromtimestamp(mtime)
+    except Exception:
+        return None
+
+
+def extract_fields_from_text(text: str) -> Dict[str, Any]:
+    """从纯文本（日志内容）中提取各字段值"""
+    result = {}
+    if not text:
+        return result
+    try:
+        m = re.search(r"楼栋号?\s*[:：]\s*([^\n\r]+)", text)
+        if m:
+            val = m.group(1).strip()
+            if not _is_empty(val):
+                bld = extract_building_from_name(val)
+                result["building"] = bld or val
+
+        m = re.search(r"浇筑部位\s*[:：]\s*([^\n\r]+)|部位\s*[:：]\s*([^\n\r]+)", text)
+        if m:
+            val = (m.group(1) or m.group(2) or "").strip()
+            if not _is_empty(val):
+                pos = extract_position_from_name(val)
+                result["position"] = pos or val
+
+        m = re.search(r"强度等级?\s*[:：]\s*([^\n\r]+)", text)
+        if m:
+            val = m.group(1).strip()
+            if not _is_empty(val):
+                st = extract_strength_from_name(val)
+                result["strength_grade"] = st or val
+
+        m = re.search(r"坍落度\s*[:：]\s*([^\n\r]+)", text)
+        if m:
+            val = m.group(1).strip()
+            if not _is_empty(val):
+                sl = extract_slump_from_name(val)
+                result["slump"] = sl or val
+
+        m = re.search(r"试块组数\s*[:：]\s*([^\n\r]+)|试块\s*[:：]\s*(\d+)\s*组", text)
+        if m:
+            val = (m.group(1) or m.group(2) or "").strip()
+            if not _is_empty(val):
+                sc = extract_sample_count_from_name(val)
+                result["sample_count"] = sc or val
+
+        m = re.search(r"旁站监理员?\s*[:：]\s*([^\n\r]+)|监理员?\s*[:：]\s*([^\n\r]+)", text)
+        if m:
+            val = (m.group(1) or m.group(2) or "").strip()
+            if not _is_empty(val):
+                sp = extract_supervisor_from_name(val)
+                result["supervisor"] = sp or val
+
+        m = re.search(r"浇筑日期\s*[:：]\s*([^\n\r]+)|日期\s*[:：]\s*([^\n\r]+)", text)
+        if m:
+            val = (m.group(1) or m.group(2) or "").strip()
+            if not _is_empty(val):
+                dt = parse_date_from_string(val)
+                if dt:
+                    result["pouring_date"] = dt
+
+        has_sign = False
+        signed_patterns = [
+            r"监理员?签名[:：]?\s*[\u4e00-\u9fa5]{2,4}(?!\s*[_—]+)",
+            r"签名[:：]?\s*[\u4e00-\u9fa5]{2,4}(?!\s*[_—]+)",
+            r"签字[:：]?\s*[\u4e00-\u9fa5]{2,4}(?!\s*[_—]+)",
+            r"[\u4e00-\u9fa5]{2,4}\s*[（(]\s*已签\s*[)）]",
+        ]
+        for pat in signed_patterns:
+            if re.search(pat, text):
+                has_sign = True
+                break
+        result["has_supervisor_sign"] = has_sign
+    except Exception as e:
+        logger.debug(f"从文本提取字段失败：{e}")
+    return result
 
 
 class DirectoryScanner:
@@ -190,7 +293,7 @@ class DirectoryScanner:
             df = pd.read_excel(excel_path)
             records = []
             for _, row in df.iterrows():
-                records.append({k: (v if pd.notna(v) else "") for k, v in row.to_dict().items()})
+                records.append({k: (v if pd.notna(v) else None) for k, v in row.to_dict().items()})
             return records
         except Exception as e:
             logger.debug(f"读取Excel清单失败 {excel_path}: {e}")
@@ -210,10 +313,68 @@ class DirectoryScanner:
                     return f
         return None
 
-    def _create_record_from_folder(self, folder_path: Path) -> Optional[PouringRecord]:
-        folder_name = folder_path.name
-        record_id = folder_name
+    def _read_log_fields(self, log_file: Path) -> Dict[str, Any]:
+        fields: Dict[str, Any] = {}
+        if not log_file or not log_file.exists():
+            return fields
+        try:
+            if log_file.suffix.lower() == ".txt":
+                content = log_file.read_text(encoding="utf-8", errors="ignore")
+                fields = extract_fields_from_text(content)
+            elif log_file.suffix.lower() in {".xlsx", ".xls"}:
+                import pandas as pd
+                df = pd.read_excel(log_file, dtype=object)
+                text_parts = []
+                row_field_map: Dict[str, Any] = {}
+                for _, row in df.iterrows():
+                    row_dict = {str(k): v for k, v in row.to_dict().items() if not _is_empty(v)}
+                    for k, v in row_dict.items():
+                        text_parts.append(f"{k}:{v}")
+                    ks = list(row_dict.keys())
+                    if len(ks) >= 2:
+                        for i in range(len(ks) - 1):
+                            try:
+                                row_field_map[str(ks[i])] = row_dict[ks[i+1]]
+                            except Exception:
+                                pass
+                text = " ".join(text_parts)
+                fields = extract_fields_from_text(text)
+                if "楼栋号" in row_field_map and "building" not in fields:
+                    v = str(row_field_map["楼栋号"]).strip()
+                    if not _is_empty(v):
+                        fields["building"] = extract_building_from_name(v) or v
+                if "浇筑部位" in row_field_map and "position" not in fields:
+                    v = str(row_field_map["浇筑部位"]).strip()
+                    if not _is_empty(v):
+                        fields["position"] = extract_position_from_name(v) or v
+                if "强度等级" in row_field_map and "strength_grade" not in fields:
+                    v = str(row_field_map["强度等级"]).strip()
+                    if not _is_empty(v):
+                        fields["strength_grade"] = extract_strength_from_name(v) or v
+                if "坍落度" in row_field_map and "slump" not in fields:
+                    v = str(row_field_map["坍落度"]).strip()
+                    if not _is_empty(v):
+                        fields["slump"] = extract_slump_from_name(v) or v
+                if "试块组数" in row_field_map and "sample_count" not in fields:
+                    v = str(row_field_map["试块组数"]).strip()
+                    if not _is_empty(v):
+                        fields["sample_count"] = extract_sample_count_from_name(v) or v
+                if "监理员" in row_field_map and "supervisor" not in fields:
+                    v = str(row_field_map["监理员"]).strip()
+                    if not _is_empty(v):
+                        fields["supervisor"] = extract_supervisor_from_name(v) or v
+                if "浇筑日期" in row_field_map and "pouring_date" not in fields:
+                    dt = parse_date_from_string(row_field_map["浇筑日期"])
+                    if dt:
+                        fields["pouring_date"] = dt
+            elif log_file.suffix.lower() == ".csv":
+                content = log_file.read_text(encoding="utf-8-sig", errors="ignore")
+                fields = extract_fields_from_text(content)
+        except Exception as e:
+            logger.debug(f"读取日志字段失败 {log_file}: {e}")
+        return fields
 
+    def _find_log_file(self, folder_path: Path) -> Optional[Path]:
         log_file = None
         for f in folder_path.iterdir():
             if f.is_file() and f.suffix.lower() in LOG_EXTENSIONS:
@@ -225,73 +386,89 @@ class DirectoryScanner:
                 if f.is_file() and f.suffix.lower() in LOG_EXTENSIONS:
                     log_file = f
                     break
+        return log_file
 
-        pouring_date = extract_date_from_filename(folder_name)
-        building = extract_building_from_name(folder_name)
-        position = extract_position_from_name(folder_name)
-        strength_grade = extract_strength_from_name(folder_name)
-        slump = extract_slump_from_name(folder_name)
-        sample_count = extract_sample_count_from_name(folder_name)
-        supervisor = extract_supervisor_from_name(folder_name)
+    def _create_record_from_folder(self, folder_path: Path) -> Optional[PouringRecord]:
+        folder_name = folder_path.name
+        record_id = folder_name
+
+        log_file = self._find_log_file(folder_path)
+        log_fields = self._read_log_fields(log_file) if log_file else {}
+
+        f_date = extract_date_from_filename(folder_name)
+        f_building = extract_building_from_name(folder_name)
+        f_position = extract_position_from_name(folder_name)
+        f_strength = extract_strength_from_name(folder_name)
+        f_slump = extract_slump_from_name(folder_name)
+        f_sample_count = extract_sample_count_from_name(folder_name)
+        f_supervisor = extract_supervisor_from_name(folder_name)
 
         photos = self._scan_photos(folder_path)
+
+        def _pick(field_name, f_val, log_val=None):
+            if log_val is not None and not _is_empty(log_val):
+                return str(log_val).strip()
+            if f_val is not None and not _is_empty(f_val):
+                if isinstance(f_val, datetime):
+                    return f_val
+                return str(f_val).strip()
+            return None
+
+        building = _pick("building", f_building, log_fields.get("building"))
+        position = _pick("position", f_position, log_fields.get("position"))
+        strength = _pick("strength_grade", f_strength, log_fields.get("strength_grade"))
+        slump = _pick("slump", f_slump, log_fields.get("slump"))
+        sample_count = _pick("sample_count", f_sample_count, log_fields.get("sample_count"))
+        supervisor = _pick("supervisor", f_supervisor, log_fields.get("supervisor"))
+        pouring_date = f_date
+        if log_fields.get("pouring_date"):
+            pouring_date = log_fields["pouring_date"]
+
+        has_sign = log_fields.get("has_supervisor_sign", False)
 
         record = PouringRecord(
             record_id=record_id,
             log_file_path=str(log_file) if log_file else None,
             log_file_name=log_file.name if log_file else None,
             project_name=self.project_dir.name,
-            building=building,
+            building=building or "",
             pouring_date=pouring_date,
             position=position,
-            strength_grade=strength_grade,
+            strength_grade=strength,
             slump=slump,
             sample_count=sample_count,
             supervisor=supervisor,
+            has_supervisor_sign=has_sign,
             photos=photos,
         )
 
-        has_sign = False
-        if log_file and log_file.suffix.lower() in {".xlsx", ".xls", ".csv", ".txt"}:
-            try:
-                content_text = ""
-                if log_file.suffix.lower() == ".txt":
-                    content_text = log_file.read_text(encoding="utf-8", errors="ignore")
-                elif log_file.suffix.lower() in {".xlsx", ".xls"}:
-                    import pandas as pd
-                    df = pd.read_excel(log_file)
-                    content_text = " ".join([str(v) for v in df.values.flatten()])
-                elif log_file.suffix.lower() == ".csv":
-                    content_text = log_file.read_text(encoding="utf-8-sig", errors="ignore")
+        def _str_or_none(v):
+            if v is None or _is_empty(v):
+                return None
+            if isinstance(v, datetime):
+                return v.strftime("%Y-%m-%d")
+            return str(v).strip()
 
-                if content_text:
-                    import re as _re
-                    signed_patterns = [
-                        r"监理员?签名[:：]?\s*[\u4e00-\u9fa5]{2,4}(?!\s*[_—]+)",
-                        r"签名[:：]?\s*[\u4e00-\u9fa5]{2,4}(?!\s*[_—]+)",
-                        r"签字[:：]?\s*[\u4e00-\u9fa5]{2,4}(?!\s*[_—]+)",
-                        r"[\u4e00-\u9fa5]{2,4}\s*[（(]\s*已签\s*[)）]",
-                    ]
-                    for pat in signed_patterns:
-                        if _re.search(pat, content_text):
-                            has_sign = True
-                            break
-
-                    if not has_sign and supervisor:
-                        m = _re.search(r"签名[:：]\s*" + _re.escape(supervisor), content_text)
-                        if m:
-                            suffix = content_text[m.end():m.end()+5]
-                            if not _re.match(r"\s*[_—]{2,}", suffix):
-                                has_sign = True
-
-                        if not has_sign:
-                            pattern = _re.escape(supervisor) + r"\s*[（(]\s*已签"
-                            if _re.search(pattern, content_text):
-                                has_sign = True
-            except Exception as e:
-                logger.debug(f"检查签名失败 {log_file}: {e}")
-        record.has_supervisor_sign = has_sign
-
+        record.source_building = FieldSource(
+            folder=_str_or_none(f_building),
+            log=_str_or_none(log_fields.get("building")),
+        )
+        record.source_position = FieldSource(
+            folder=_str_or_none(f_position),
+            log=_str_or_none(log_fields.get("position")),
+        )
+        record.source_strength = FieldSource(
+            folder=_str_or_none(f_strength),
+            log=_str_or_none(log_fields.get("strength_grade")),
+        )
+        record.source_supervisor = FieldSource(
+            folder=_str_or_none(f_supervisor),
+            log=_str_or_none(log_fields.get("supervisor")),
+        )
+        record.source_date = FieldSource(
+            folder=_str_or_none(f_date),
+            log=_str_or_none(log_fields.get("pouring_date")),
+        )
         return record
 
     def _apply_manifest(self, record: PouringRecord, manifest_row: dict) -> PouringRecord:
@@ -314,18 +491,14 @@ class DirectoryScanner:
             "项目名称": "project_name",
         }
 
-        def _is_empty(v) -> bool:
-            if v is None:
-                return True
-            try:
-                import math
-                if isinstance(v, float) and math.isnan(v):
-                    return True
-            except Exception:
-                pass
-            s = str(v).strip()
-            return s == "" or s.lower() == "nan"
+        def _str_or_none(v):
+            if v is None or _is_empty(v):
+                return None
+            if isinstance(v, datetime):
+                return v.strftime("%Y-%m-%d")
+            return str(v).strip()
 
+        manifest_values: Dict[str, Any] = {}
         for csv_key, attr in field_mapping.items():
             for k, v in manifest_row.items():
                 if str(k).strip() == csv_key:
@@ -333,13 +506,34 @@ class DirectoryScanner:
                         continue
                     if attr == "pouring_date":
                         parsed = parse_date_from_string(str(v))
-                        if parsed and record.pouring_date is None:
-                            record.pouring_date = parsed
+                        if parsed:
+                            manifest_values[attr] = parsed
                     else:
-                        v_str = str(v).strip()
-                        current_val = getattr(record, attr)
-                        if current_val in (None, "") or _is_empty(current_val):
-                            setattr(record, attr, v_str)
+                        manifest_values[attr] = str(v).strip()
+
+        for attr, val in manifest_values.items():
+            if attr == "pouring_date":
+                if record.pouring_date is None:
+                    record.pouring_date = val
+            else:
+                cur = getattr(record, attr)
+                if cur is None or _is_empty(cur):
+                    setattr(record, attr, str(val).strip())
+
+        if "position" in manifest_values:
+            record.source_position.manifest = _str_or_none(manifest_values["position"])
+        if "strength_grade" in manifest_values:
+            record.source_strength.manifest = _str_or_none(manifest_values["strength_grade"])
+        if "supervisor" in manifest_values:
+            record.source_supervisor.manifest = _str_or_none(manifest_values["supervisor"])
+        if "building" in manifest_values:
+            bv = manifest_values["building"]
+            bld = extract_building_from_name(str(bv)) or str(bv)
+            record.source_building.manifest = _str_or_none(bld)
+            if _is_empty(record.building):
+                record.building = bld
+        if "pouring_date" in manifest_values:
+            record.source_date.manifest = _str_or_none(manifest_values["pouring_date"])
 
         sign_key = None
         for k in manifest_row.keys():
@@ -349,13 +543,11 @@ class DirectoryScanner:
                 break
         if sign_key:
             v = manifest_row[sign_key]
-            if not _is_empty(v) and str(v).strip() not in ("", "无", "否", "0"):
-                record.has_supervisor_sign = True
-            elif _is_empty(v):
-                pass
-            else:
-                if str(v).strip() in ("", "无", "否", "0"):
-                    record.has_supervisor_sign = False
+            if not _is_empty(v) and str(v).strip() not in ("", "无", "否", "0", "未签"):
+                if not record.has_supervisor_sign:
+                    record.has_supervisor_sign = True
+            elif not _is_empty(v) and str(v).strip() in ("无", "否", "0", "未签"):
+                record.has_supervisor_sign = False
 
         return record
 
@@ -365,7 +557,7 @@ class DirectoryScanner:
         row_position = ""
         for k, v in manifest_row.items():
             kl = str(k).strip()
-            v_str = str(v).strip() if v else ""
+            v_str = "" if _is_empty(v) else str(v).strip()
             if "日期" in kl:
                 row_date = parse_date_from_string(v_str)
             if "楼栋" in kl or "楼号" in kl:
@@ -378,8 +570,11 @@ class DirectoryScanner:
             score = 0
             if row_date and r.pouring_date and row_date.date() == r.pouring_date.date():
                 score += 3
-            if row_building and r.building and row_building == r.building:
-                score += 2
+            if row_building and r.building:
+                n1 = row_building.replace("号楼", "").replace("#", "").replace(" ", "")
+                n2 = r.building.replace("号楼", "").replace("#", "").replace(" ", "")
+                if n1 == n2:
+                    score += 2
             if row_position and r.position and row_position in r.position:
                 score += 2
             if score >= 3:
@@ -405,37 +600,46 @@ class DirectoryScanner:
             if item.is_dir():
                 record = self._create_record_from_folder(item)
                 if record:
-                    if self._is_in_date_range(record.pouring_date):
-                        self.records.append(record)
-            elif item.is_file() and manifest is None:
-                if item.suffix.lower() in {".xlsx", ".xls", ".csv"}:
-                    if item.stem == manifest_path.stem if manifest_path else True:
-                        continue
+                    self.records.append(record)
 
         if manifest:
+            matched_ids = set()
             for row in manifest:
                 matched = self._match_manifest_to_record(row, self.records)
                 if matched:
                     self._apply_manifest(matched, row)
+                    matched_ids.add(matched.record_id)
                 else:
                     row_date = None
                     row_building = ""
+                    row_position_val = ""
                     for k, v in row.items():
                         kl = str(k).strip()
-                        v_str = str(v).strip() if v else ""
+                        v_str = "" if _is_empty(v) else str(v).strip()
                         if "日期" in kl:
                             row_date = parse_date_from_string(v_str)
                         if "楼栋" in kl or "楼号" in kl:
                             row_building = extract_building_from_name(v_str) or v_str
-                    if self._is_in_date_range(row_date):
-                        rec = PouringRecord(
-                            record_id=f"清单-{len(self.records)+1}",
-                            project_name=self.project_dir.name,
-                            building=row_building,
-                            pouring_date=row_date,
-                        )
-                        self._apply_manifest(rec, row)
-                        self.records.append(rec)
+                        if "部位" in kl:
+                            row_position_val = v_str
+                    rec = PouringRecord(
+                        record_id=f"清单-{len(self.records)+1}",
+                        project_name=self.project_dir.name,
+                        building=row_building,
+                        pouring_date=row_date,
+                    )
+                    if row_position_val:
+                        pos = extract_position_from_name(row_position_val) or row_position_val
+                        rec.position = pos
+                        rec.source_position.manifest = pos
+                    self._apply_manifest(rec, row)
+                    self.records.append(rec)
+
+        filtered = []
+        for r in self.records:
+            if self._is_in_date_range(r.pouring_date):
+                filtered.append(r)
+        self.records = filtered
 
         self.records.sort(key=lambda r: (r.pouring_date or datetime.min, r.building, r.record_id))
         return self.records

@@ -1,4 +1,5 @@
 import os
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -8,12 +9,22 @@ from tabulate import tabulate
 
 from .models import PouringRecord, Severity, Issue
 from .validator import get_statistics
+from .rules import InspectionRules, ISSUE_TYPE_TO_KEY
+
+
+SEVERITY_SORT_ORDER = {
+    Severity.CRITICAL: 0,
+    Severity.HIGH: 1,
+    Severity.MEDIUM: 2,
+    Severity.LOW: 3,
+}
 
 
 class ReportGenerator:
-    def __init__(self, output_dir: Optional[str] = None):
+    def __init__(self, output_dir: Optional[str] = None, rules: Optional[InspectionRules] = None):
         self.output_dir = Path(output_dir) if output_dir else Path.cwd()
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.rules = rules
 
     def generate_summary_table(self, records: List[PouringRecord], show_all: bool = False) -> str:
         display_records = records if show_all else [r for r in records if r.has_issues]
@@ -27,6 +38,7 @@ class ReportGenerator:
             issue_brief = "; ".join([i.issue_type.value for i in r.issues[:3]])
             if len(r.issues) > 3:
                 issue_brief += f" 等共{len(r.issues)}项"
+            consistency_ok = "✅" if not r.consistency_issues else f"⚠️{len(r.consistency_issues)}项"
             rows.append([
                 r.record_id[:30],
                 r.building or "—",
@@ -36,13 +48,14 @@ class ReportGenerator:
                 r.supervisor or "—",
                 "有" if r.has_supervisor_sign else "无",
                 len(r.photos),
+                consistency_ok,
                 sev_text,
                 issue_brief or "—",
             ])
 
         headers = [
             "记录编号", "楼栋", "浇筑日期", "部位",
-            "强度等级", "监理员", "签名", "照片数", "严重程度", "问题摘要"
+            "强度等级", "监理员", "签名", "照片数", "一致性", "严重程度", "问题摘要"
         ]
         return tabulate(rows, headers=headers, tablefmt="grid", showindex=False, stralign="left")
 
@@ -53,7 +66,7 @@ class ReportGenerator:
             if not r.issues:
                 continue
             date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else "未知"
-            for issue in sorted(r.issues, key=lambda i: i.severity.order):
+            for issue in sorted(r.issues, key=lambda i: SEVERITY_SORT_ORDER.get(i.severity, 99)):
                 rows.append([
                     idx,
                     issue.severity.value,
@@ -64,6 +77,7 @@ class ReportGenerator:
                     r.supervisor or "—",
                     issue.issue_type.value,
                     issue.description,
+                    issue.responsible or "—",
                 ])
                 idx += 1
 
@@ -72,7 +86,37 @@ class ReportGenerator:
 
         headers = [
             "序号", "严重程度", "记录编号", "楼栋",
-            "浇筑日期", "部位", "监理员", "问题类型", "详细描述"
+            "浇筑日期", "部位", "监理员", "问题类型", "详细描述", "责任人"
+        ]
+        return tabulate(rows, headers=headers, tablefmt="grid", showindex=False, stralign="left")
+
+    def generate_consistency_table(self, records: List[PouringRecord]) -> str:
+        conflicts = [r for r in records if r.consistency_issues]
+        if not conflicts:
+            return "✅ 所有记录的资料一致性检查通过（楼栋/部位/强度/监理员/日期均无冲突）。"
+
+        rows = []
+        idx = 1
+        for r in conflicts:
+            date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else "未知"
+            for issue in r.consistency_issues:
+                sv = issue.source_values or {}
+                rows.append([
+                    idx,
+                    r.record_id[:30],
+                    r.building or "—",
+                    date_str,
+                    issue.field_name,
+                    sv.get("folder") or "—",
+                    sv.get("log") or "—",
+                    sv.get("manifest") or "—",
+                    issue.responsible or "—",
+                ])
+                idx += 1
+
+        headers = [
+            "序号", "记录编号", "楼栋", "浇筑日期", "冲突字段",
+            "文件夹名取值", "日志取值", "清单取值", "责任人"
         ]
         return tabulate(rows, headers=headers, tablefmt="grid", showindex=False, stralign="left")
 
@@ -94,6 +138,8 @@ class ReportGenerator:
         lines.append("=" * 80)
         lines.append("混凝土浇筑旁站资料整改清单")
         lines.append(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if self.rules and self.rules.source_file:
+            lines.append(f"规则来源：{self.rules.source_file}")
         lines.append("=" * 80)
         lines.append("")
 
@@ -118,11 +164,25 @@ class ReportGenerator:
                 lines.append(f"          记录编号：{r.record_id}")
                 lines.append(f"          监理员：{r.supervisor or '未填写'}")
                 lines.append(f"          待整改内容：")
-                for issue in sorted(r.issues, key=lambda x: x.severity.order):
+                for issue in sorted(r.issues, key=lambda x: SEVERITY_SORT_ORDER.get(x.severity, 99)):
                     marker = "●" if issue.severity == sev else "○"
                     lines.append(f"            {marker} [{issue.severity.value}] {issue.description}")
+                    if issue.suggestion:
+                        lines.append(f"                 → 整改建议：{issue.suggestion}")
+                    if issue.responsible:
+                        lines.append(f"                 → 责任岗位：{issue.responsible}")
                     total_actions += 1
                 lines.append("")
+
+        conflicts = [r for r in issues_only if r.consistency_issues]
+        if conflicts:
+            lines.append("⚠️  三、资料一致性问题汇总")
+            lines.append("-" * 80)
+            lines.append("  下列记录在文件夹名、旁站日志、浇筑清单之间存在字段不一致，需核对统一：")
+            for r in conflicts:
+                for ci in r.consistency_issues:
+                    lines.append(f"    - {r.record_id}：{ci.description}")
+            lines.append("")
 
         lines.append("-" * 80)
         lines.append(f"📋 统计：共 {len(issues_only)} 条记录存在问题，需整改事项 {total_actions} 项")
@@ -142,6 +202,12 @@ class ReportGenerator:
         lines.append("=" * 60)
         lines.append("混凝土浇筑旁站资料检查统计报告")
         lines.append(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if self.rules and self.rules.source_file:
+            lines.append(f"规则配置：{self.rules.source_file}")
+        if self.rules:
+            lines.append(f"最少照片：{self.rules.min_photo_count}张  |  "
+                         f"时间间隔≤{self.rules.max_photo_gap_hours}h  |  "
+                         f"照片时间±{self.rules.photo_early_days}/{self.rules.photo_late_days}天")
         lines.append("=" * 60)
         lines.append("")
         lines.append("【总体情况】")
@@ -150,6 +216,8 @@ class ReportGenerator:
         lines.append(f"  有问题记录：      {stats['有问题记录']}")
         lines.append(f"  资料合格率：      {stats['合格率']}")
         lines.append(f"  累计问题数：      {stats['总问题数']}")
+        if stats.get('一致性冲突数'):
+            lines.append(f"  一致性冲突：      {stats['一致性冲突数']} 项")
         lines.append("")
         lines.append("【问题类型分布】")
         issue_dist = stats['问题类型分布']
@@ -158,7 +226,7 @@ class ReportGenerator:
             for issue_name, count in sorted(issue_dist.items(), key=lambda x: -x[1]):
                 bar_len = int(count / max_val * 30) if max_val > 0 else 0
                 bar = "█" * bar_len
-                lines.append(f"  {issue_name:<12} {count:>4}  {bar}")
+                lines.append(f"  {issue_name:<14} {count:>4}  {bar}")
         else:
             lines.append("  （无问题）")
         lines.append("")
@@ -190,6 +258,9 @@ class ReportGenerator:
         content_parts.append("📌 问题记录概览：")
         content_parts.append(self.generate_summary_table(records, show_all=False))
         content_parts.append("")
+        content_parts.append("🔗 资料一致性核对：")
+        content_parts.append(self.generate_consistency_table(records))
+        content_parts.append("")
         content_parts.append("📋 问题详细清单：")
         content_parts.append(self.generate_issue_detail_table(records))
         content_parts.append("")
@@ -211,10 +282,16 @@ class ReportGenerator:
             from openpyxl.styles import Font, PatternFill, Alignment
             from openpyxl.utils.dataframe import dataframe_to_rows
         except ImportError:
-            print("警告：缺少pandas或openpyxl，无法生成Excel报告。请使用TXT格式。")
+            print("警告：缺少pandas或openpyxl，无法生成Excel报告。请使用TXT或CSV格式。")
             return ""
 
         wb = Workbook()
+        severity_colors = {
+            "严重": "FFC7CE",
+            "重要": "FFEB9C",
+            "一般": "FFD699",
+            "轻微": "C6EFCE",
+        }
 
         ws1 = wb.active
         ws1.title = "统计概览"
@@ -226,6 +303,7 @@ class ReportGenerator:
             ["有问题记录", stats["有问题记录"]],
             ["合格率", stats["合格率"]],
             ["累计问题数", stats["总问题数"]],
+            ["一致性冲突数", stats.get("一致性冲突数", 0)],
             ["涉及楼栋数", stats["涉及楼栋数"]],
             ["涉及监理员数", stats["涉及监理员数"]],
             ["楼栋列表", ", ".join(stats["楼栋列表"])],
@@ -238,7 +316,6 @@ class ReportGenerator:
             cell.fill = PatternFill("solid", fgColor="DDDDDD")
 
         ws2 = wb.create_sheet("问题记录概览")
-        issues_only = [r for r in records if r.has_issues]
         overview_data = [r.to_dict() for r in records]
         if overview_data:
             df = pd.DataFrame(overview_data)
@@ -249,13 +326,14 @@ class ReportGenerator:
                 cell.fill = PatternFill("solid", fgColor="DDDDDD")
 
         ws3 = wb.create_sheet("详细问题清单")
-        detail_rows = [["序号", "严重程度", "记录编号", "楼栋", "浇筑日期", "部位", "强度等级", "监理员", "问题类型", "详细描述"]]
+        detail_rows = [["序号", "严重程度", "记录编号", "楼栋", "浇筑日期", "部位",
+                        "强度等级", "监理员", "问题类型", "详细描述", "整改建议", "责任人"]]
         idx = 1
         for r in sorted(records, key=lambda x: (x.highest_severity.order if x.highest_severity else 99, x.record_id)):
             if not r.issues:
                 continue
             date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else "未知"
-            for issue in sorted(r.issues, key=lambda i: i.severity.order):
+            for issue in sorted(r.issues, key=lambda i: SEVERITY_SORT_ORDER.get(i.severity, 99)):
                 detail_rows.append([
                     idx,
                     issue.severity.value,
@@ -267,6 +345,8 @@ class ReportGenerator:
                     r.supervisor or "—",
                     issue.issue_type.value,
                     issue.description,
+                    issue.suggestion or "",
+                    issue.responsible or "",
                 ])
                 idx += 1
         for row in detail_rows:
@@ -274,22 +354,37 @@ class ReportGenerator:
         for cell in ws3[1]:
             cell.font = Font(bold=True)
             cell.fill = PatternFill("solid", fgColor="DDDDDD")
+        for row in ws3.iter_rows(min_row=2):
+            sev_cell = row[1]
+            color = severity_colors.get(str(sev_cell.value))
+            if color:
+                for cell in row:
+                    cell.fill = PatternFill("solid", fgColor=color)
 
-        severity_colors = {
-            "严重": "FFC7CE",
-            "重要": "FFEB9C",
-            "一般": "FFD699",
-            "轻微": "C6EFCE",
-        }
-        for ws in [ws3]:
-            for row in ws.iter_rows(min_row=2):
-                sev_cell = row[1]
-                color = severity_colors.get(str(sev_cell.value))
-                if color:
-                    for cell in row:
-                        cell.fill = PatternFill("solid", fgColor=color)
+        ws4 = wb.create_sheet("一致性冲突")
+        conflict_rows = [["序号", "记录编号", "楼栋", "浇筑日期", "冲突字段",
+                          "文件夹名", "旁站日志", "浇筑清单", "整改建议", "责任人"]]
+        ci = 1
+        for r in sorted(records, key=lambda x: x.record_id):
+            if not r.consistency_issues:
+                continue
+            date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else "未知"
+            for issue in r.consistency_issues:
+                sv = issue.source_values or {}
+                conflict_rows.append([
+                    ci, r.record_id, r.building or "—", date_str,
+                    issue.field_name,
+                    sv.get("folder") or "—", sv.get("log") or "—", sv.get("manifest") or "—",
+                    issue.suggestion or "", issue.responsible or "",
+                ])
+                ci += 1
+        for row in conflict_rows:
+            ws4.append(row)
+        for cell in ws4[1]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="DDDDDD")
 
-        for ws in [ws1, ws2, ws3]:
+        for ws in [ws1, ws2, ws3, ws4]:
             for column in ws.columns:
                 max_length = 0
                 column_letter = column[0].column_letter
@@ -299,7 +394,7 @@ class ReportGenerator:
                             max_length = len(str(cell.value))
                     except:
                         pass
-                adjusted_width = min(max_length + 2, 50)
+                adjusted_width = min(max_length + 2, 60)
                 ws.column_dimensions[column_letter].width = adjusted_width
 
         wb.save(str(filepath))
@@ -312,4 +407,66 @@ class ReportGenerator:
         filepath = self.output_dir / filename
         content = self.generate_action_list(records)
         filepath.write_text(content, encoding="utf-8")
+        return str(filepath)
+
+    def save_action_csv(self, records: List[PouringRecord], filename: str = None) -> str:
+        """导出适合发项目部的整改清单CSV，含整改建议、责任人和是否整改列"""
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"整改清单_{timestamp}.csv"
+        filepath = self.output_dir / filename
+
+        headers = [
+            "序号", "严重程度", "严重程度排序", "记录编号", "楼栋号", "浇筑日期",
+            "浇筑部位", "强度等级", "监理员", "问题类型", "问题详情",
+            "文件夹原值", "日志原值", "清单原值",
+            "整改建议", "责任岗位", "指定责任人（填写）",
+            "计划完成日期（填写）", "是否整改（填是/否）", "实际完成日期（填写）", "备注"
+        ]
+
+        all_issues = []
+        for r in records:
+            if not r.issues:
+                continue
+            date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else ""
+            for issue in sorted(r.issues, key=lambda i: SEVERITY_SORT_ORDER.get(i.severity, 99)):
+                sv = issue.source_values or {}
+                all_issues.append((
+                    issue, r, date_str,
+                    sv.get("folder") or "",
+                    sv.get("log") or "",
+                    sv.get("manifest") or "",
+                ))
+
+        all_issues.sort(key=lambda x: (
+            SEVERITY_SORT_ORDER.get(x[0].severity, 99),
+            x[1].record_id,
+        ))
+
+        try:
+            with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                for idx, (issue, r, date_str, fv, lv, mv) in enumerate(all_issues, 1):
+                    writer.writerow([
+                        idx,
+                        issue.severity.value,
+                        SEVERITY_SORT_ORDER.get(issue.severity, 99),
+                        r.record_id,
+                        r.building or "",
+                        date_str,
+                        r.position or "",
+                        r.strength_grade or "",
+                        r.supervisor or "",
+                        issue.issue_type.value,
+                        issue.description,
+                        fv, lv, mv,
+                        issue.suggestion or "",
+                        issue.responsible or "",
+                        "", "", "否", "", "",
+                    ])
+        except Exception as e:
+            print(f"CSV导出失败：{e}")
+            return ""
+
         return str(filepath)
