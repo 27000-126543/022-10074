@@ -34,6 +34,7 @@ DEFAULT_RULES = {
         "photo_time_mismatch": "请核对照片拍摄时间与实际浇筑时段，必要时补充说明或更换原始照片",
         "missing_log": "请补做旁站监理日志，需包含人、机、料、法、环五要素并签名",
         "consistency_conflict": "请核对文件夹名、旁站日志、浇筑清单中的字段，保持三处信息一致后重新归档",
+        "unmatched_manifest": "请核对该清单条目是否存在对应文件夹，检查文件夹命名是否规范（日期_楼栋_部位_强度），必要时补建文件夹",
     },
     "responsible_roles": {
         "missing_position": "施工资料员",
@@ -45,6 +46,7 @@ DEFAULT_RULES = {
         "photo_time_mismatch": "施工资料员",
         "missing_log": "旁站监理员",
         "consistency_conflict": "项目质量总监",
+        "unmatched_manifest": "项目质量总监",
     },
 }
 
@@ -185,6 +187,12 @@ ISSUE_TYPE_TO_KEY = {
     IssueType.PHOTO_TIME_MISMATCH: "photo_time_mismatch",
     IssueType.MISSING_LOG: "missing_log",
     IssueType.INVALID_DATE: "invalid_date",
+    IssueType.CONSISTENCY_BUILDING: "consistency_building",
+    IssueType.CONSISTENCY_POSITION: "consistency_position",
+    IssueType.CONSISTENCY_STRENGTH: "consistency_strength",
+    IssueType.CONSISTENCY_SUPERVISOR: "consistency_supervisor",
+    IssueType.CONSISTENCY_DATE: "consistency_date",
+    IssueType.UNMATCHED_MANIFEST: "unmatched_manifest",
 }
 
 

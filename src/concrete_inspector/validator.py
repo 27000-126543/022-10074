@@ -55,6 +55,7 @@ class RecordValidator:
         self._check_photos(record)
         if self.rules.consistency_check:
             self._check_consistency(record)
+        self._check_unmatched_manifest(record)
 
         record.issues = [self._wrap_issue(i) for i in record.issues]
         return record
@@ -120,7 +121,7 @@ class RecordValidator:
                 actual=str(len(record.photos)),
             ))
 
-        if len(record.photos) >= 2 and record.pouring_date:
+        if len(record.photos) >= 1 and record.pouring_date:
             self._check_photo_time_coherence(record)
 
     def _check_photo_time_coherence(self, record: PouringRecord):
@@ -227,6 +228,22 @@ class RecordValidator:
                     "manifest": source.manifest,
                 },
             ))
+
+    def _check_unmatched_manifest(self, record: PouringRecord):
+        if not record.manifest_unmatched:
+            return
+        date_str = record.pouring_date.strftime("%Y-%m-%d") if record.pouring_date else "未知日期"
+        bld_str = record.building or "未知楼栋"
+        pos_str = record.position or "未知部位"
+        record.issues.append(Issue(
+            issue_type=IssueType.UNMATCHED_MANIFEST,
+            severity=Severity.HIGH,
+            description=f"清单记录未匹配到对应文件夹：{bld_str} {pos_str}（{date_str}），请核对清单条目是否完整或文件夹命名是否规范",
+            field_name="清单匹配",
+            source_values={
+                "manifest": f"{bld_str} {pos_str} {date_str}",
+            },
+        ))
 
 
 def get_records_with_issues(records: List[PouringRecord]) -> List[PouringRecord]:

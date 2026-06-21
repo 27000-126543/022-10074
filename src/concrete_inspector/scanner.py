@@ -555,6 +555,7 @@ class DirectoryScanner:
         row_date = None
         row_building = ""
         row_position = ""
+        row_strength = ""
         for k, v in manifest_row.items():
             kl = str(k).strip()
             v_str = "" if _is_empty(v) else str(v).strip()
@@ -564,26 +565,53 @@ class DirectoryScanner:
                 row_building = extract_building_from_name(v_str) or v_str
             if "部位" in kl:
                 row_position = v_str
+            if "强度" in kl:
+                row_strength = extract_strength_from_name(v_str) or v_str
+
+        def _norm_building(b):
+            return str(b).replace("号楼", "").replace("#", "").replace(" ", "").strip()
+
+        def _norm_strength(s):
+            return str(s).upper().replace(" ", "").strip()
+
+        def _norm_position(p):
+            return str(p).replace(" ", "").strip()
 
         candidates = []
         for r in records:
             score = 0
+            detail = []
             if row_date and r.pouring_date and row_date.date() == r.pouring_date.date():
                 score += 3
+                detail.append("日期")
             if row_building and r.building:
-                n1 = row_building.replace("号楼", "").replace("#", "").replace(" ", "")
-                n2 = r.building.replace("号楼", "").replace("#", "").replace(" ", "")
-                if n1 == n2:
+                if _norm_building(row_building) == _norm_building(r.building):
+                    score += 3
+                    detail.append("楼栋")
+            if row_position and r.position:
+                rp = _norm_position(row_position)
+                lp = _norm_position(r.position)
+                if rp and lp and (rp in lp or lp in rp):
                     score += 2
-            if row_position and r.position and row_position in r.position:
-                score += 2
-            if score >= 3:
-                candidates.append((score, r))
+                    detail.append("部位")
+            if row_strength and r.strength_grade:
+                if _norm_strength(row_strength) == _norm_strength(r.strength_grade):
+                    score += 2
+                    detail.append("强度")
+            if score >= 4:
+                candidates.append((score, r, detail))
 
-        if candidates:
-            candidates.sort(key=lambda x: -x[0])
-            return candidates[0][1]
-        return None
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: -x[0])
+        best_score = candidates[0][0]
+        best_candidates = [c for c in candidates if c[0] == best_score]
+
+        if len(best_candidates) > 1 and best_score < 8:
+            return None
+
+        return best_candidates[0][1]
 
     def scan(self) -> List[PouringRecord]:
         self.records = []
@@ -613,6 +641,7 @@ class DirectoryScanner:
                     row_date = None
                     row_building = ""
                     row_position_val = ""
+                    row_strength_val = ""
                     for k, v in row.items():
                         kl = str(k).strip()
                         v_str = "" if _is_empty(v) else str(v).strip()
@@ -622,16 +651,24 @@ class DirectoryScanner:
                             row_building = extract_building_from_name(v_str) or v_str
                         if "部位" in kl:
                             row_position_val = v_str
+                        if "强度" in kl:
+                            row_strength_val = v_str
                     rec = PouringRecord(
-                        record_id=f"清单-{len(self.records)+1}",
+                        record_id=f"未匹配清单-{len(self.records)+1}",
                         project_name=self.project_dir.name,
                         building=row_building,
                         pouring_date=row_date,
+                        is_manifest_only=True,
+                        manifest_unmatched=True,
                     )
                     if row_position_val:
                         pos = extract_position_from_name(row_position_val) or row_position_val
                         rec.position = pos
                         rec.source_position.manifest = pos
+                    if row_strength_val:
+                        st = extract_strength_from_name(row_strength_val) or row_strength_val
+                        rec.strength_grade = st
+                        rec.source_strength.manifest = st
                     self._apply_manifest(rec, row)
                     self.records.append(rec)
 

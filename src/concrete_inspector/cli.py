@@ -397,5 +397,69 @@ def cmd_info(project_dir, start_date, end_date, output_dir, verbose, rules_path)
     click.echo(f"  必填字段：{', '.join(req_info)}")
 
 
+@main.command(name="weekly", help="生成每周抽查汇总报告（按楼栋、监理员、问题类型统计）")
+@click.option("--project", "-p", required=True, type=click.Path(exists=True), help="项目根目录")
+@click.option("--start-date", "-s", default=None, help="开始日期 (YYYY-MM-DD)")
+@click.option("--end-date", "-e", default=None, help="结束日期 (YYYY-MM-DD)")
+@click.option("--output", "-o", default=".", help="报告输出目录")
+@click.option("--format", "-f", "fmt", default="table",
+              type=click.Choice(["table", "csv", "excel", "all"]), help="输出格式")
+@click.option("--rules", "-r", default=None, type=click.Path(), help="规则配置文件路径")
+def weekly_report(project, start_date, end_date, output, fmt, rules):
+    project_path = Path(project).resolve()
+    out_dir = Path(output).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    records, rules_obj = load_and_validate(project_path, start_date, end_date, verbose=False, rules_path=rules)
+    if not records:
+        click.echo("⚠️  日期范围内没有找到浇筑记录")
+        return
+
+    reporter = ReportGenerator(out_dir, rules_obj)
+    click.echo(reporter.generate_weekly_summary(records))
+    click.echo("")
+
+    if fmt in ("csv", "all"):
+        csv_path = reporter.save_weekly_csv(records)
+        if csv_path:
+            click.echo(f"📄 周报CSV已导出：{csv_path}")
+    if fmt in ("excel", "all"):
+        xlsx_path = reporter.save_weekly_excel(records)
+        if xlsx_path:
+            click.echo(f"📊 周报Excel已导出：{xlsx_path}")
+
+
+@main.command(name="track", help="导入历史整改CSV，跟踪问题整改进展")
+@click.option("--project", "-p", required=True, type=click.Path(exists=True), help="项目根目录")
+@click.option("--historical", "-i", required=True, type=click.Path(exists=True), help="上周导出的整改CSV文件路径")
+@click.option("--start-date", "-s", default=None, help="开始日期 (YYYY-MM-DD)")
+@click.option("--end-date", "-e", default=None, help="结束日期 (YYYY-MM-DD)")
+@click.option("--output", "-o", default=".", help="报告输出目录")
+@click.option("--format", "-f", "fmt", default="table",
+              type=click.Choice(["table", "csv", "all"]), help="输出格式")
+@click.option("--rules", "-r", default=None, type=click.Path(), help="规则配置文件路径")
+def track_report(project, historical, start_date, end_date, output, fmt, rules):
+    project_path = Path(project).resolve()
+    out_dir = Path(output).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    hist_path = Path(historical).resolve()
+
+    records, rules_obj = load_and_validate(project_path, start_date, end_date, verbose=False, rules_path=rules)
+
+    from .tracker import IssueTracker
+    tracker = IssueTracker(str(hist_path))
+    click.echo(f"📋 已加载历史整改记录：{len(tracker.historical_issues)} 条（来自 {hist_path.name}）")
+    click.echo("")
+
+    result = tracker.compare_with_current(records)
+    click.echo(tracker.generate_tracking_report(result, project_path.name))
+
+    if fmt in ("csv", "all"):
+        csv_path = tracker.save_tracking_csv(result, str(out_dir))
+        if csv_path:
+            click.echo(f"")
+            click.echo(f"📄 跟踪报告CSV已导出：{csv_path}")
+
+
 if __name__ == "__main__":
     main()

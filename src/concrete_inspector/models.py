@@ -36,6 +36,7 @@ class IssueType(Enum):
     CONSISTENCY_STRENGTH = "强度等级不一致"
     CONSISTENCY_SUPERVISOR = "监理员不一致"
     CONSISTENCY_DATE = "浇筑日期不一致"
+    UNMATCHED_MANIFEST = "清单记录未匹配"
 
 
 @dataclass
@@ -112,6 +113,8 @@ class PouringRecord:
     source_strength: FieldSource = field(default_factory=FieldSource)
     source_supervisor: FieldSource = field(default_factory=FieldSource)
     source_date: FieldSource = field(default_factory=FieldSource)
+    is_manifest_only: bool = False
+    manifest_unmatched: bool = False
 
     @property
     def has_issues(self) -> bool:

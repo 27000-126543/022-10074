@@ -470,3 +470,367 @@ class ReportGenerator:
             return ""
 
         return str(filepath)
+
+    def _build_weekly_stats(self, records: List[PouringRecord]) -> dict:
+        stats = get_statistics(records)
+        total = len(records)
+        ok = sum(1 for r in records if not r.has_issues)
+        critical = sum(1 for r in records for i in r.issues if i.severity == Severity.CRITICAL)
+        high = sum(1 for r in records for i in r.issues if i.severity == Severity.HIGH)
+        unmatched = sum(1 for r in records if r.manifest_unmatched)
+        consistency = sum(1 for r in records if r.consistency_issues)
+
+        building_stats = {}
+        for r in records:
+            b = r.building or "未识别楼栋"
+            if b not in building_stats:
+                building_stats[b] = {"total": 0, "issues": 0, "critical": 0, "issue_count": 0}
+            building_stats[b]["total"] += 1
+            if r.has_issues:
+                building_stats[b]["issues"] += 1
+            building_stats[b]["issue_count"] += len(r.issues)
+            building_stats[b]["critical"] += len(r.critical_issues)
+
+        supervisor_stats = {}
+        for r in records:
+            s = r.supervisor or "未填写"
+            if s not in supervisor_stats:
+                supervisor_stats[s] = {"total": 0, "issues": 0, "issue_count": 0}
+            supervisor_stats[s]["total"] += 1
+            if r.has_issues:
+                supervisor_stats[s]["issues"] += 1
+            supervisor_stats[s]["issue_count"] += len(r.issues)
+
+        role_stats = {}
+        for r in records:
+            for issue in r.issues:
+                role = issue.responsible or "未指定"
+                role_stats[role] = role_stats.get(role, 0) + 1
+
+        issue_type_stats = {}
+        for r in records:
+            for issue in r.issues:
+                t = issue.issue_type.value
+                issue_type_stats[t] = issue_type_stats.get(t, 0) + 1
+
+        return {
+            "总览": {
+                "总记录数": total,
+                "合格记录数": ok,
+                "问题记录数": total - ok,
+                "资料合格率": f"{(ok/total*100):.1f}%" if total else "0%",
+                "累计问题数": stats["总问题数"],
+                "严重问题数": critical,
+                "重要问题数": high,
+                "一致性冲突记录": consistency,
+                "未匹配清单数": unmatched,
+            },
+            "楼栋排行": sorted(building_stats.items(), key=lambda x: -x[1]["issue_count"]),
+            "监理员排行": sorted(supervisor_stats.items(), key=lambda x: -x[1]["issue_count"]),
+            "问题类型分布": sorted(issue_type_stats.items(), key=lambda x: -x[1]),
+            "责任岗位分布": sorted(role_stats.items(), key=lambda x: -x[1]),
+        }
+
+    def generate_weekly_summary(self, records: List[PouringRecord]) -> str:
+        w = self._build_weekly_stats(records)
+        lines = []
+        lines.append("=" * 70)
+        lines.append("混凝土浇筑旁站检查  每周抽查汇总报告")
+        lines.append(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if self.rules and self.rules.source_file:
+            lines.append(f"规则来源：{self.rules.source_file}")
+        lines.append("=" * 70)
+        lines.append("")
+
+        lines.append("【一、本周总体情况】")
+        lines.append("-" * 70)
+        ov = w["总览"]
+        for k, v in ov.items():
+            lines.append(f"  {k:<16} {v}")
+        lines.append("")
+
+        lines.append("【二、楼栋问题排行（按问题总数降序）】")
+        lines.append("-" * 70)
+        lines.append(f"  {'排名':<4} {'楼栋':<12} {'记录数':<8} {'问题记录':<8} {'问题总数':<8} {'严重问题':<8}")
+        for idx, (b, s) in enumerate(w["楼栋排行"], 1):
+            lines.append(f"  {idx:<4} {b:<12} {s['total']:<8} {s['issues']:<8} {s['issue_count']:<8} {s['critical']:<8}")
+        lines.append("")
+
+        lines.append("【三、监理员问题排行】")
+        lines.append("-" * 70)
+        lines.append(f"  {'排名':<4} {'监理员':<12} {'记录数':<8} {'问题记录':<8} {'问题总数':<8}")
+        for idx, (s, st) in enumerate(w["监理员排行"], 1):
+            lines.append(f"  {idx:<4} {s:<12} {st['total']:<8} {st['issues']:<8} {st['issue_count']:<8}")
+        lines.append("")
+
+        lines.append("【四、问题类型分布】")
+        lines.append("-" * 70)
+        max_val = max([v for _, v in w["问题类型分布"]] + [1])
+        for t, c in w["问题类型分布"]:
+            bar = "█" * int(c / max_val * 30)
+            lines.append(f"  {t:<18} {c:>4}  {bar}")
+        lines.append("")
+
+        lines.append("【五、责任岗位分布】")
+        lines.append("-" * 70)
+        max_r = max([v for _, v in w["责任岗位分布"]] + [1])
+        for role, c in w["责任岗位分布"]:
+            bar = "█" * int(c / max_r * 30)
+            lines.append(f"  {role:<18} {c:>4}  {bar}")
+        lines.append("")
+
+        lines.append("【六、重点关注问题】")
+        lines.append("-" * 70)
+        high_priority = []
+        for r in records:
+            for issue in r.issues:
+                if issue.severity in (Severity.CRITICAL, Severity.HIGH):
+                    high_priority.append((issue, r))
+        high_priority.sort(key=lambda x: (x[0].severity.order, x[1].record_id))
+        if high_priority:
+            for idx, (issue, r) in enumerate(high_priority[:15], 1):
+                date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else "未知"
+                lines.append(f"  {idx:>2}. [{issue.severity.value}] {r.building or '-'} {r.position or '-'}（{date_str}）")
+                lines.append(f"      · {issue.description}")
+                lines.append(f"      · 责任岗位：{issue.responsible or '-'}")
+            if len(high_priority) > 15:
+                lines.append(f"  ... 共 {len(high_priority)} 项，仅显示前15项")
+        else:
+            lines.append("  ✅ 暂无严重/重要问题")
+        lines.append("")
+
+        unmatched_records = [r for r in records if r.manifest_unmatched]
+        if unmatched_records:
+            lines.append("【七、未匹配清单记录】")
+            lines.append("-" * 70)
+            lines.append("  以下清单条目未找到对应文件夹，请核对：")
+            for r in unmatched_records:
+                date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else "未知"
+                lines.append(f"  · {r.building or '未知楼栋'} {r.position or '未知部位'}（{date_str}） - {r.strength_grade or '未知强度'}")
+            lines.append("")
+
+        lines.append("=" * 70)
+        return "\n".join(lines)
+
+    def save_weekly_csv(self, records: List[PouringRecord], filename: str = None) -> str:
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"周报汇总_{timestamp}.csv"
+        filepath = self.output_dir / filename
+
+        w = self._build_weekly_stats(records)
+
+        try:
+            with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+
+                writer.writerow(["混凝土浇筑旁站每周抽查汇总报告"])
+                writer.writerow([f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"])
+                if self.rules and self.rules.source_file:
+                    writer.writerow([f"规则来源：{self.rules.source_file}"])
+                writer.writerow([])
+
+                writer.writerow(["一、总体情况"])
+                writer.writerow(["指标", "数值"])
+                for k, v in w["总览"].items():
+                    writer.writerow([k, v])
+                writer.writerow([])
+
+                writer.writerow(["二、楼栋问题排行"])
+                writer.writerow(["排名", "楼栋", "记录数", "问题记录数", "问题总数", "严重问题数", "合格率"])
+                for idx, (b, s) in enumerate(w["楼栋排行"], 1):
+                    rate = f"{(1-s['issues']/s['total'])*100:.1f}%" if s['total'] else "0%"
+                    writer.writerow([idx, b, s["total"], s["issues"], s["issue_count"], s["critical"], rate])
+                writer.writerow([])
+
+                writer.writerow(["三、监理员问题排行"])
+                writer.writerow(["排名", "监理员", "记录数", "问题记录数", "问题总数"])
+                for idx, (s, st) in enumerate(w["监理员排行"], 1):
+                    writer.writerow([idx, s, st["total"], st["issues"], st["issue_count"]])
+                writer.writerow([])
+
+                writer.writerow(["四、问题类型分布"])
+                writer.writerow(["问题类型", "数量", "占比"])
+                total_issues = sum(v for _, v in w["问题类型分布"])
+                for t, c in w["问题类型分布"]:
+                    pct = f"{c/total_issues*100:.1f}%" if total_issues else "0%"
+                    writer.writerow([t, c, pct])
+                writer.writerow([])
+
+                writer.writerow(["五、责任岗位分布"])
+                writer.writerow(["责任岗位", "问题数", "占比"])
+                total_role = sum(v for _, v in w["责任岗位分布"])
+                for role, c in w["责任岗位分布"]:
+                    pct = f"{c/total_role*100:.1f}%" if total_role else "0%"
+                    writer.writerow([role, c, pct])
+                writer.writerow([])
+
+                writer.writerow(["六、未匹配清单记录"])
+                writer.writerow(["序号", "楼栋", "部位", "强度等级", "浇筑日期", "监理员"])
+                unmatched = [r for r in records if r.manifest_unmatched]
+                for idx, r in enumerate(unmatched, 1):
+                    date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else ""
+                    writer.writerow([idx, r.building or "", r.position or "", r.strength_grade or "", date_str, r.supervisor or ""])
+
+        except Exception as e:
+            print(f"周报CSV导出失败：{e}")
+            return ""
+        return str(filepath)
+
+    def save_weekly_excel(self, records: List[PouringRecord], filename: str = None) -> str:
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"周报汇总_{timestamp}.xlsx"
+        filepath = self.output_dir / filename
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.chart import BarChart, Reference
+        except ImportError:
+            print("警告：缺少openpyxl，无法生成Excel周报。")
+            return ""
+
+        w = self._build_weekly_stats(records)
+        wb = Workbook()
+
+        header_fill = PatternFill("solid", fgColor="4472C4")
+        header_font = Font(bold=True, color="FFFFFF")
+        sub_fill = PatternFill("solid", fgColor="D9E2F3")
+        sub_font = Font(bold=True)
+
+        ws1 = wb.active
+        ws1.title = "周报总览"
+
+        row = 1
+        ws1.cell(row=row, column=1, value="混凝土浇筑旁站每周抽查汇总报告").font = Font(bold=True, size=14)
+        row += 1
+        ws1.cell(row=row, column=1, value=f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        row += 1
+        if self.rules and self.rules.source_file:
+            ws1.cell(row=row, column=1, value=f"规则来源：{self.rules.source_file}")
+            row += 1
+        row += 1
+
+        ws1.cell(row=row, column=1, value="一、总体情况").fill = sub_fill
+        ws1.cell(row=row, column=1).font = sub_font
+        row += 1
+        for k, v in w["总览"].items():
+            ws1.cell(row=row, column=1, value=k)
+            ws1.cell(row=row, column=2, value=v)
+            row += 1
+        row += 1
+
+        ws1.cell(row=row, column=1, value="二、楼栋问题排行").fill = sub_fill
+        ws1.cell(row=row, column=1).font = sub_font
+        row += 1
+        headers = ["排名", "楼栋", "记录数", "问题记录数", "问题总数", "严重问题数", "合格率"]
+        for col, h in enumerate(headers, 1):
+            c = ws1.cell(row=row, column=col, value=h)
+            c.fill = header_fill
+            c.font = header_font
+        row += 1
+        for idx, (b, s) in enumerate(w["楼栋排行"], 1):
+            rate = f"{(1-s['issues']/s['total'])*100:.1f}%" if s['total'] else "0%"
+            ws1.cell(row=row, column=1, value=idx)
+            ws1.cell(row=row, column=2, value=b)
+            ws1.cell(row=row, column=3, value=s["total"])
+            ws1.cell(row=row, column=4, value=s["issues"])
+            ws1.cell(row=row, column=5, value=s["issue_count"])
+            ws1.cell(row=row, column=6, value=s["critical"])
+            ws1.cell(row=row, column=7, value=rate)
+            row += 1
+        row += 2
+
+        ws1.cell(row=row, column=1, value="三、监理员问题排行").fill = sub_fill
+        ws1.cell(row=row, column=1).font = sub_font
+        row += 1
+        headers2 = ["排名", "监理员", "记录数", "问题记录数", "问题总数"]
+        for col, h in enumerate(headers2, 1):
+            c = ws1.cell(row=row, column=col, value=h)
+            c.fill = header_fill
+            c.font = header_font
+        row += 1
+        for idx, (s, st) in enumerate(w["监理员排行"], 1):
+            ws1.cell(row=row, column=1, value=idx)
+            ws1.cell(row=row, column=2, value=s)
+            ws1.cell(row=row, column=3, value=st["total"])
+            ws1.cell(row=row, column=4, value=st["issues"])
+            ws1.cell(row=row, column=5, value=st["issue_count"])
+            row += 1
+
+        for col in range(1, 8):
+            ws1.column_dimensions[chr(64+col)].width = 16
+
+        ws2 = wb.create_sheet("问题类型分布")
+        ws2.cell(row=1, column=1, value="问题类型").fill = header_fill
+        ws2.cell(row=1, column=2, value="数量").fill = header_fill
+        ws2.cell(row=1, column=1).font = header_font
+        ws2.cell(row=1, column=2).font = header_font
+        for idx, (t, c) in enumerate(w["问题类型分布"], 2):
+            ws2.cell(row=idx, column=1, value=t)
+            ws2.cell(row=idx, column=2, value=c)
+        ws2.column_dimensions['A'].width = 22
+        ws2.column_dimensions['B'].width = 12
+
+        try:
+            chart = BarChart()
+            chart.type = "bar"
+            chart.style = 10
+            chart.title = "问题类型分布"
+            data = Reference(ws2, min_col=2, min_row=1, max_row=1+len(w["问题类型分布"]))
+            cats = Reference(ws2, min_col=1, min_row=2, max_row=1+len(w["问题类型分布"]))
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+            chart.height = 12
+            chart.width = 20
+            ws2.add_chart(chart, "D2")
+        except Exception:
+            pass
+
+        ws3 = wb.create_sheet("责任岗位分布")
+        ws3.cell(row=1, column=1, value="责任岗位").fill = header_fill
+        ws3.cell(row=1, column=2, value="问题数").fill = header_fill
+        ws3.cell(row=1, column=1).font = header_font
+        ws3.cell(row=1, column=2).font = header_font
+        for idx, (role, c) in enumerate(w["责任岗位分布"], 2):
+            ws3.cell(row=idx, column=1, value=role)
+            ws3.cell(row=idx, column=2, value=c)
+        ws3.column_dimensions['A'].width = 20
+        ws3.column_dimensions['B'].width = 12
+
+        try:
+            chart2 = BarChart()
+            chart2.type = "bar"
+            chart2.style = 11
+            chart2.title = "责任岗位问题分布"
+            data2 = Reference(ws3, min_col=2, min_row=1, max_row=1+len(w["责任岗位分布"]))
+            cats2 = Reference(ws3, min_col=1, min_row=2, max_row=1+len(w["责任岗位分布"]))
+            chart2.add_data(data2, titles_from_data=True)
+            chart2.set_categories(cats2)
+            chart2.height = 10
+            chart2.width = 18
+            ws3.add_chart(chart2, "D2")
+        except Exception:
+            pass
+
+        ws4 = wb.create_sheet("未匹配清单")
+        headers3 = ["序号", "楼栋", "部位", "强度等级", "浇筑日期", "监理员"]
+        for col, h in enumerate(headers3, 1):
+            c = ws4.cell(row=1, column=col, value=h)
+            c.fill = header_fill
+            c.font = header_font
+        unmatched = [r for r in records if r.manifest_unmatched]
+        for idx, r in enumerate(unmatched, 2):
+            date_str = r.pouring_date.strftime("%Y-%m-%d") if r.pouring_date else ""
+            ws4.cell(row=idx, column=1, value=idx-1)
+            ws4.cell(row=idx, column=2, value=r.building or "")
+            ws4.cell(row=idx, column=3, value=r.position or "")
+            ws4.cell(row=idx, column=4, value=r.strength_grade or "")
+            ws4.cell(row=idx, column=5, value=date_str)
+            ws4.cell(row=idx, column=6, value=r.supervisor or "")
+        for col in range(1, 7):
+            ws4.column_dimensions[chr(64+col)].width = 16
+
+        wb.save(str(filepath))
+        return str(filepath)
