@@ -552,6 +552,12 @@ class DirectoryScanner:
         return record
 
     def _match_manifest_to_record(self, manifest_row: dict, records: List[PouringRecord]) -> Optional[PouringRecord]:
+        match_result = self._score_manifest_match(manifest_row, records)
+        if match_result:
+            return match_result[1]
+        return None
+
+    def _score_manifest_match(self, manifest_row: dict, records: List[PouringRecord]):
         row_date = None
         row_building = ""
         row_position = ""
@@ -579,27 +585,50 @@ class DirectoryScanner:
 
         candidates = []
         for r in records:
-            score = 0
-            detail = []
+            date_match = False
+            building_match = False
+            position_match = False
+            strength_match = False
+
             if row_date and r.pouring_date and row_date.date() == r.pouring_date.date():
-                score += 3
-                detail.append("日期")
-            if row_building and r.building:
-                if _norm_building(row_building) == _norm_building(r.building):
-                    score += 3
-                    detail.append("楼栋")
+                date_match = True
+            if row_building and r.building and _norm_building(row_building) == _norm_building(r.building):
+                building_match = True
             if row_position and r.position:
                 rp = _norm_position(row_position)
                 lp = _norm_position(r.position)
                 if rp and lp and (rp in lp or lp in rp):
-                    score += 2
-                    detail.append("部位")
-            if row_strength and r.strength_grade:
-                if _norm_strength(row_strength) == _norm_strength(r.strength_grade):
-                    score += 2
-                    detail.append("强度")
-            if score >= 4:
-                candidates.append((score, r, detail))
+                    position_match = True
+            if row_strength and r.strength_grade and _norm_strength(row_strength) == _norm_strength(r.strength_grade):
+                strength_match = True
+
+            if not (date_match and building_match):
+                continue
+
+            score = 0
+            detail = []
+            if date_match:
+                score += 3
+                detail.append("日期")
+            if building_match:
+                score += 3
+                detail.append("楼栋")
+            if position_match:
+                score += 2
+                detail.append("部位")
+            if strength_match:
+                score += 2
+                detail.append("强度")
+
+            if score < 6:
+                continue
+
+            candidates.append((score, r, detail, {
+                "date": date_match,
+                "building": building_match,
+                "position": position_match,
+                "strength": strength_match,
+            }))
 
         if not candidates:
             return None
@@ -608,10 +637,38 @@ class DirectoryScanner:
         best_score = candidates[0][0]
         best_candidates = [c for c in candidates if c[0] == best_score]
 
-        if len(best_candidates) > 1 and best_score < 8:
+        if len(best_candidates) > 1 and best_score < 10:
             return None
 
-        return best_candidates[0][1]
+        return best_candidates[0]
+
+    def _match_all_manifest_rows(self, manifest_rows: List[dict], records: List[PouringRecord]):
+        assignments = {}
+        used_record_ids = set()
+        unmatched_rows = []
+
+        scored_pairs = []
+        for row_idx, row in enumerate(manifest_rows):
+            result = self._score_manifest_match(row, records)
+            if result:
+                score, record, detail, info = result
+                scored_pairs.append((score, row_idx, record, row, detail, info))
+
+        scored_pairs.sort(key=lambda x: -x[0])
+
+        for score, row_idx, record, row, detail, info in scored_pairs:
+            if record.record_id in used_record_ids:
+                unmatched_rows.append((row_idx, row))
+                continue
+            assignments[row_idx] = (record, row, detail, info, score)
+            used_record_ids.add(record.record_id)
+
+        for row_idx, row in enumerate(manifest_rows):
+            if row_idx not in assignments:
+                if not any(r[1] == row_idx for r in unmatched_rows):
+                    unmatched_rows.append((row_idx, row))
+
+        return assignments, unmatched_rows
 
     def scan(self) -> List[PouringRecord]:
         self.records = []
@@ -626,51 +683,59 @@ class DirectoryScanner:
 
         for item in self.project_dir.iterdir():
             if item.is_dir():
+                if item.name.startswith("."):
+                    continue
                 record = self._create_record_from_folder(item)
                 if record:
                     self.records.append(record)
 
         if manifest:
-            matched_ids = set()
-            for row in manifest:
-                matched = self._match_manifest_to_record(row, self.records)
-                if matched:
-                    self._apply_manifest(matched, row)
-                    matched_ids.add(matched.record_id)
-                else:
-                    row_date = None
-                    row_building = ""
-                    row_position_val = ""
-                    row_strength_val = ""
-                    for k, v in row.items():
-                        kl = str(k).strip()
-                        v_str = "" if _is_empty(v) else str(v).strip()
-                        if "日期" in kl:
-                            row_date = parse_date_from_string(v_str)
-                        if "楼栋" in kl or "楼号" in kl:
-                            row_building = extract_building_from_name(v_str) or v_str
-                        if "部位" in kl:
-                            row_position_val = v_str
-                        if "强度" in kl:
-                            row_strength_val = v_str
-                    rec = PouringRecord(
-                        record_id=f"未匹配清单-{len(self.records)+1}",
-                        project_name=self.project_dir.name,
-                        building=row_building,
-                        pouring_date=row_date,
-                        is_manifest_only=True,
-                        manifest_unmatched=True,
-                    )
-                    if row_position_val:
-                        pos = extract_position_from_name(row_position_val) or row_position_val
-                        rec.position = pos
-                        rec.source_position.manifest = pos
-                    if row_strength_val:
-                        st = extract_strength_from_name(row_strength_val) or row_strength_val
-                        rec.strength_grade = st
-                        rec.source_strength.manifest = st
-                    self._apply_manifest(rec, row)
-                    self.records.append(rec)
+            assignments, unmatched_rows = self._match_all_manifest_rows(manifest, self.records)
+
+            for row_idx, (record, row, detail, info, score) in assignments.items():
+                self._apply_manifest(record, row)
+                if not hasattr(record, 'manifest_match_detail'):
+                    record.manifest_match_detail = []
+                record.manifest_match_detail.append({
+                    "row_index": row_idx,
+                    "score": score,
+                    "matched_fields": detail,
+                })
+
+            for row_idx, row in unmatched_rows:
+                row_date = None
+                row_building = ""
+                row_position_val = ""
+                row_strength_val = ""
+                for k, v in row.items():
+                    kl = str(k).strip()
+                    v_str = "" if _is_empty(v) else str(v).strip()
+                    if "日期" in kl:
+                        row_date = parse_date_from_string(v_str)
+                    if "楼栋" in kl or "楼号" in kl:
+                        row_building = extract_building_from_name(v_str) or v_str
+                    if "部位" in kl:
+                        row_position_val = v_str
+                    if "强度" in kl:
+                        row_strength_val = v_str
+                rec = PouringRecord(
+                    record_id=f"未匹配清单-{len(self.records)+1}",
+                    project_name=self.project_dir.name,
+                    building=row_building,
+                    pouring_date=row_date,
+                    is_manifest_only=True,
+                    manifest_unmatched=True,
+                )
+                if row_position_val:
+                    pos = extract_position_from_name(row_position_val) or row_position_val
+                    rec.position = pos
+                    rec.source_position.manifest = pos
+                if row_strength_val:
+                    st = extract_strength_from_name(row_strength_val) or row_strength_val
+                    rec.strength_grade = st
+                    rec.source_strength.manifest = st
+                self._apply_manifest(rec, row)
+                self.records.append(rec)
 
         filtered = []
         for r in self.records:

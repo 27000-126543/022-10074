@@ -1,0 +1,89 @@
+{
+  "snapshot_date": "2026-06-22",
+  "project_name": "示例项目_阳光花园二期",
+  "date_range_start": "2024-01-01",
+  "date_range_end": "2024-01-31",
+  "total_records": 16,
+  "ok_records": 2,
+  "issue_records": 14,
+  "pass_rate": 12.5,
+  "total_issues": 24,
+  "critical_issues": 2,
+  "high_issues": 18,
+  "medium_issues": 4,
+  "low_issues": 0,
+  "consistency_conflicts": 7,
+  "unmatched_manifests": 2,
+  "issue_type_distribution": {
+    "缺少坍落度": 3,
+    "缺少试块组数": 2,
+    "缺少监理签名": 2,
+    "缺少旁站照片": 4,
+    "缺少旁站日志": 3,
+    "清单记录未匹配": 2,
+    "部位不一致": 5,
+    "监理员不一致": 1,
+    "照片时间异常": 1,
+    "强度等级不一致": 1
+  },
+  "building_stats": {
+    "1号楼": {
+      "total": 7,
+      "issues": 6,
+      "issue_count": 9,
+      "critical": 1
+    },
+    "5号楼": {
+      "total": 3,
+      "issues": 3,
+      "issue_count": 6,
+      "critical": 1
+    },
+    "2号楼": {
+      "total": 3,
+      "issues": 2,
+      "issue_count": 4,
+      "critical": 0
+    },
+    "3号楼": {
+      "total": 3,
+      "issues": 3,
+      "issue_count": 5,
+      "critical": 0
+    }
+  },
+  "supervisor_stats": {
+    "李四": {
+      "total": 5,
+      "issues": 4,
+      "issue_count": 9
+    },
+    "赵六": {
+      "total": 5,
+      "issues": 4,
+      "issue_count": 7
+    },
+    "王五": {
+      "total": 2,
+      "issues": 2,
+      "issue_count": 3
+    },
+    "张三": {
+      "total": 4,
+      "issues": 4,
+      "issue_count": 5
+    }
+  },
+  "role_stats": {
+    "试验员": 5,
+    "旁站监理员": 5,
+    "施工资料员": 5,
+    "项目质量总监": 9
+  },
+  "tracking_available": true,
+  "tracking_resolved": 2,
+  "tracking_still_open": 14,
+  "tracking_new": 6,
+  "tracking_false_resolved": 4,
+  "tracking_close_rate": 10.0
+}

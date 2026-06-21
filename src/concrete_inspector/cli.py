@@ -280,8 +280,10 @@ def cmd_filter(project_dir, start_date, end_date, output_dir, verbose, rules_pat
               help="整改清单输出格式（默认导出全部）")
 @click.option("--building", "-b", type=str, default=None, help="仅针对某楼栋生成清单")
 @click.option("--consistency-only", is_flag=True, default=False, help="仅导出一致性冲突")
+@click.option("--historical", "-i", "historical_csv", default=None, type=click.Path(),
+              help="上周导出的整改CSV（用于合并历史回填信息，实现滚动跟踪）")
 def cmd_list(project_dir, start_date, end_date, output_dir, verbose, rules_path,
-             severity, fmt, building, consistency_only):
+             severity, fmt, building, consistency_only, historical_csv):
     """清单生成：按严重程度分级，含整改建议和责任人，可导出CSV发项目部"""
     records, rules = load_and_validate(project_dir, start_date, end_date, verbose, rules_path)
     reporter = ReportGenerator(output_dir, rules=rules)
@@ -305,6 +307,17 @@ def cmd_list(project_dir, start_date, end_date, output_dir, verbose, rules_path,
         records = [r for r in records if r.consistency_issues]
         click.echo(f"🔗 仅一致性冲突记录：{len(records)} 条")
 
+    historical_issues = None
+    if historical_csv:
+        from .tracker import IssueTracker
+        hist_path = Path(historical_csv).resolve()
+        if hist_path.exists():
+            tracker = IssueTracker(str(hist_path))
+            historical_issues = tracker.historical_issues
+            click.echo(f"📋 已加载上周整改记录：{len(historical_issues)} 条（将合并回填信息到CSV）")
+        else:
+            click.echo(f"⚠️  历史CSV不存在：{hist_path}")
+
     click.echo("")
     click.echo(reporter.generate_action_list(records))
 
@@ -318,11 +331,14 @@ def cmd_list(project_dir, start_date, end_date, output_dir, verbose, rules_path,
             click.echo(f"📊 整改清单Excel：{path}（含一致性冲突sheet）")
 
     if fmt in ("csv", "all"):
-        path = reporter.save_action_csv(records)
+        path = reporter.save_action_csv(records, historical_issues=historical_issues)
         if path:
             click.echo(f"📋 整改清单CSV：{path}")
-            click.echo("   → 含整改建议、责任岗位；请项目部填写：")
-            click.echo("     指定责任人 / 计划完成日期 / 是否整改 / 实际完成日期 / 备注")
+            if historical_issues:
+                click.echo("   💡 已合并上周回填信息（责任人/计划日期/是否整改等），可继续下发项目部滚动填写")
+            else:
+                click.echo("   → 含整改建议、责任岗位；请项目部填写：")
+                click.echo("     指定责任人 / 计划完成日期 / 是否整改 / 实际完成日期 / 备注")
 
 
 @main.command("info")
@@ -397,7 +413,7 @@ def cmd_info(project_dir, start_date, end_date, output_dir, verbose, rules_path)
     click.echo(f"  必填字段：{', '.join(req_info)}")
 
 
-@main.command(name="weekly", help="生成每周抽查汇总报告（按楼栋、监理员、问题类型统计）")
+@main.command(name="weekly", help="生成每周抽查汇总报告（按楼栋、监理员、问题类型统计，支持导入上周整改CSV看闭环）")
 @click.option("--project", "-p", required=True, type=click.Path(exists=True), help="项目根目录")
 @click.option("--start-date", "-s", default=None, help="开始日期 (YYYY-MM-DD)")
 @click.option("--end-date", "-e", default=None, help="结束日期 (YYYY-MM-DD)")
@@ -405,7 +421,10 @@ def cmd_info(project_dir, start_date, end_date, output_dir, verbose, rules_path)
 @click.option("--format", "-f", "fmt", default="table",
               type=click.Choice(["table", "csv", "excel", "all"]), help="输出格式")
 @click.option("--rules", "-r", default=None, type=click.Path(), help="规则配置文件路径")
-def weekly_report(project, start_date, end_date, output, fmt, rules):
+@click.option("--historical", "-i", "historical_csv", default=None, type=click.Path(),
+              help="上周导出的整改CSV（用于计算整改闭环看板）")
+@click.option("--no-save", is_flag=True, help="不保存本次结果到项目历史（默认自动保存）")
+def weekly_report(project, start_date, end_date, output, fmt, rules, historical_csv, no_save):
     project_path = Path(project).resolve()
     out_dir = Path(output).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -415,8 +434,24 @@ def weekly_report(project, start_date, end_date, output, fmt, rules):
         click.echo("⚠️  日期范围内没有找到浇筑记录")
         return
 
+    from .history import HistoryStore
+    from .tracker import IssueTracker, TrackingResult
+
+    store = HistoryStore(str(project_path))
+    trend_result = store.compute_trend(limit=8)
+
+    tracking_result: Optional[TrackingResult] = None
+    if historical_csv:
+        hist_path = Path(historical_csv).resolve()
+        if hist_path.exists():
+            tracker = IssueTracker(str(hist_path))
+            tracking_result = tracker.compare_with_current(records)
+            click.echo(f"📋 已加载上周整改记录：{len(tracker.historical_issues)} 条")
+        else:
+            click.echo(f"⚠️  历史CSV不存在：{hist_path}")
+
     reporter = ReportGenerator(out_dir, rules_obj)
-    click.echo(reporter.generate_weekly_summary(records))
+    click.echo(reporter.generate_weekly_summary(records, tracking_result=tracking_result, trend_result=trend_result))
     click.echo("")
 
     if fmt in ("csv", "all"):
@@ -428,8 +463,51 @@ def weekly_report(project, start_date, end_date, output, fmt, rules):
         if xlsx_path:
             click.echo(f"📊 周报Excel已导出：{xlsx_path}")
 
+    if not no_save:
+        start_dt = None
+        end_dt = None
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            except Exception:
+                pass
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            except Exception:
+                pass
+        snapshot = HistoryStore.build_snapshot(records, (start_dt, end_dt), tracking_result)
+        snapshot.project_name = project_path.name
+        saved_path = store.save_weekly(snapshot)
+        click.echo(f"💾 本次结果已保存到项目历史：{saved_path}")
+        if historical_csv and tracking_result:
+            store.save_tracking(tracking_result, snapshot)
 
-@main.command(name="track", help="导入历史整改CSV，跟踪问题整改进展")
+
+@main.command(name="trend", help="查看最近几周的问题类型变化和整改关闭率趋势")
+@click.option("--project", "-p", required=True, type=click.Path(exists=True), help="项目根目录")
+@click.option("--weeks", "-n", default=8, type=int, help="显示最近多少周的数据（默认8）")
+@click.option("--output", "-o", default=".", help="报告输出目录")
+@click.option("--format", "-f", "fmt", default="table",
+              type=click.Choice(["table", "csv", "all"]), help="输出格式")
+def trend_report(project, weeks, output, fmt):
+    project_path = Path(project).resolve()
+    out_dir = Path(output).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    from .history import HistoryStore
+    store = HistoryStore(str(project_path))
+    trend = store.compute_trend(limit=weeks)
+
+    click.echo(HistoryStore.format_trend_report(trend, project_path.name))
+
+    if fmt in ("csv", "all") and trend.weeks_count > 0:
+        csv_path = HistoryStore.save_trend_csv(trend, str(out_dir), project_path.name)
+        if csv_path:
+            click.echo(f"📄 趋势报告CSV已导出：{csv_path}")
+
+
+@main.command(name="track", help="导入历史整改CSV，跟踪问题整改进展（支持滚动回填继续下发）")
 @click.option("--project", "-p", required=True, type=click.Path(exists=True), help="项目根目录")
 @click.option("--historical", "-i", required=True, type=click.Path(exists=True), help="上周导出的整改CSV文件路径")
 @click.option("--start-date", "-s", default=None, help="开始日期 (YYYY-MM-DD)")
@@ -438,7 +516,8 @@ def weekly_report(project, start_date, end_date, output, fmt, rules):
 @click.option("--format", "-f", "fmt", default="table",
               type=click.Choice(["table", "csv", "all"]), help="输出格式")
 @click.option("--rules", "-r", default=None, type=click.Path(), help="规则配置文件路径")
-def track_report(project, historical, start_date, end_date, output, fmt, rules):
+@click.option("--no-save", is_flag=True, help="不保存跟踪结果到项目历史")
+def track_report(project, historical, start_date, end_date, output, fmt, rules, no_save):
     project_path = Path(project).resolve()
     out_dir = Path(output).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -447,6 +526,8 @@ def track_report(project, historical, start_date, end_date, output, fmt, rules):
     records, rules_obj = load_and_validate(project_path, start_date, end_date, verbose=False, rules_path=rules)
 
     from .tracker import IssueTracker
+    from .history import HistoryStore
+
     tracker = IssueTracker(str(hist_path))
     click.echo(f"📋 已加载历史整改记录：{len(tracker.historical_issues)} 条（来自 {hist_path.name}）")
     click.echo("")
@@ -459,6 +540,13 @@ def track_report(project, historical, start_date, end_date, output, fmt, rules):
         if csv_path:
             click.echo(f"")
             click.echo(f"📄 跟踪报告CSV已导出：{csv_path}")
+            click.echo(f"   💡 提示：该CSV可继续发给项目部回填整改情况，下周再用 -i 导入即可滚动跟踪")
+
+    if not no_save:
+        from .history import HistoryStore
+        store = HistoryStore(str(project_path))
+        saved = store.save_tracking(result)
+        click.echo(f"💾 跟踪结果已保存：{saved}")
 
 
 if __name__ == "__main__":

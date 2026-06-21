@@ -409,8 +409,8 @@ class ReportGenerator:
         filepath.write_text(content, encoding="utf-8")
         return str(filepath)
 
-    def save_action_csv(self, records: List[PouringRecord], filename: str = None) -> str:
-        """导出适合发项目部的整改清单CSV，含整改建议、责任人和是否整改列"""
+    def save_action_csv(self, records: List[PouringRecord], filename: str = None, historical_issues: dict = None) -> str:
+        """导出适合发项目部的整改清单CSV，含整改建议、责任人和是否整改列；支持合并历史回填信息"""
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"整改清单_{timestamp}.csv"
@@ -448,6 +448,19 @@ class ReportGenerator:
                 writer = csv.writer(f)
                 writer.writerow(headers)
                 for idx, (issue, r, date_str, fv, lv, mv) in enumerate(all_issues, 1):
+                    key = f"{r.record_id}||{issue.issue_type.value}"
+                    resp = ""
+                    plan = ""
+                    rectified = "否"
+                    actual = ""
+                    remark = ""
+                    if historical_issues and key in historical_issues:
+                        hi = historical_issues[key]
+                        resp = hi.responsible_person or ""
+                        plan = hi.plan_date or ""
+                        rectified = hi.is_rectified if hi.is_rectified.strip() else "否"
+                        actual = hi.actual_date or ""
+                        remark = hi.remark or ""
                     writer.writerow([
                         idx,
                         issue.severity.value,
@@ -463,7 +476,7 @@ class ReportGenerator:
                         fv, lv, mv,
                         issue.suggestion or "",
                         issue.responsible or "",
-                        "", "", "否", "", "",
+                        resp, plan, rectified, actual, remark,
                     ])
         except Exception as e:
             print(f"CSV导出失败：{e}")
@@ -531,7 +544,109 @@ class ReportGenerator:
             "责任岗位分布": sorted(role_stats.items(), key=lambda x: -x[1]),
         }
 
-    def generate_weekly_summary(self, records: List[PouringRecord]) -> str:
+    def generate_closure_dashboard(self, tracking_result=None, trend_result=None) -> str:
+        lines = []
+        if tracking_result is None and trend_result is None:
+            return ""
+
+        lines.append("")
+        lines.append("=" * 72)
+        lines.append("🔄 整改闭环看板")
+        lines.append("=" * 72)
+        lines.append("")
+
+        if tracking_result is not None:
+            tr = tracking_result
+            lines.append("【本周整改闭环统计】")
+            lines.append("-" * 72)
+            lines.append(f"  上周遗留问题总数：  {tr.total_historical}")
+            lines.append(f"  本周问题总数：      {tr.total_current}")
+            lines.append(f"  ✅ 已整改关闭：     {len(tr.resolved) + len(tr.historical_only_closed)}")
+            lines.append(f"  🟧 仍未整改：       {len(tr.still_open)}")
+            lines.append(f"  🟩 本周新增：       {len(tr.new_issues)}")
+            lines.append(f"  🟥 标记整改但仍存在：{len(tr.false_resolved)}")
+            if tr.total_historical > 0:
+                close_rate = (len(tr.resolved) + len(tr.historical_only_closed)) / tr.total_historical * 100
+                lines.append(f"  📊 整改关闭率：     {close_rate:.1f}%")
+            lines.append("")
+
+            if tr.false_resolved:
+                bld_stat: Dict[str, int] = {}
+                for _, _, r in tr.false_resolved:
+                    b = r.building or "未识别"
+                    bld_stat[b] = bld_stat.get(b, 0) + 1
+                if bld_stat:
+                    lines.append("  标记整改但仍存在-按楼栋分布：")
+                    for b, c in sorted(bld_stat.items(), key=lambda x: -x[1]):
+                        lines.append(f"    · {b}: {c}项")
+                    lines.append("")
+
+            if tr.still_open:
+                bld_stat2: Dict[str, int] = {}
+                for _, _, r in tr.still_open:
+                    b = r.building or "未识别"
+                    bld_stat2[b] = bld_stat2.get(b, 0) + 1
+                if bld_stat2:
+                    lines.append("  仍未整改-按楼栋分布：")
+                    for b, c in sorted(bld_stat2.items(), key=lambda x: -x[1]):
+                        lines.append(f"    · {b}: {c}项")
+                    lines.append("")
+
+        if trend_result is not None and trend_result.weeks_count >= 2:
+            t = trend_result
+            lines.append("【多周趋势对比（最近" + str(t.weeks_count) + "周）】")
+            lines.append("-" * 72)
+            header = f"  {'周次':<22} {'合格率':<10} {'问题总数':<10}"
+            if any(cr is not None for cr in t.close_rate_trend):
+                header += f" {'关闭率':<10}"
+            lines.append(header)
+            for idx, wk in enumerate(t.weeks):
+                pr = f"{t.pass_rate_trend[idx]}%"
+                ic = str(t.total_issues_trend[idx])
+                row = f"  {wk:<22} {pr:<10} {ic:<10}"
+                if any(cr is not None for cr in t.close_rate_trend):
+                    cr = t.close_rate_trend[idx]
+                    row += f" {f'{cr}%' if cr is not None else '-':<10}"
+                lines.append(row)
+            lines.append("")
+
+            if t.issue_type_trends:
+                lines.append("  主要问题类型变化（TOP5）：")
+                sorted_types = sorted(t.issue_type_trends.items(), key=lambda x: -sum(x[1]))[:5]
+                for itype, counts in sorted_types:
+                    trend_arrow = ""
+                    if len(counts) >= 2:
+                        diff = counts[-1] - counts[-2]
+                        if diff > 0:
+                            trend_arrow = f" 🔺↑{diff}"
+                        elif diff < 0:
+                            trend_arrow = f" 🔻↓{abs(diff)}"
+                        else:
+                            trend_arrow = " →持平"
+                    lines.append(f"    · {itype:<16} 本周{counts[-1]}项{trend_arrow}")
+                lines.append("")
+
+            if t.building_issue_trends:
+                lines.append("  楼栋问题变化（TOP5）：")
+                sorted_bld = sorted(t.building_issue_trends.items(), key=lambda x: -sum(x[1]))[:5]
+                for bld, counts in sorted_bld:
+                    trend_arrow = ""
+                    if len(counts) >= 2:
+                        diff = counts[-1] - counts[-2]
+                        if diff > 0:
+                            trend_arrow = f" 🔺↑{diff}"
+                        elif diff < 0:
+                            trend_arrow = f" 🔻↓{abs(diff)}"
+                        else:
+                            trend_arrow = " →持平"
+                    lines.append(f"    · {bld:<12} 本周{counts[-1]}项{trend_arrow}")
+                lines.append("")
+
+        lines.append("=" * 72)
+        return "\n".join(lines)
+
+    def generate_weekly_summary(self, records: List[PouringRecord],
+                                tracking_result=None, trend_result=None) -> str:
         w = self._build_weekly_stats(records)
         lines = []
         lines.append("=" * 70)
@@ -610,6 +725,10 @@ class ReportGenerator:
             lines.append("")
 
         lines.append("=" * 70)
+
+        if tracking_result is not None or (trend_result is not None and trend_result.weeks_count >= 2):
+            lines.append(self.generate_closure_dashboard(tracking_result, trend_result))
+
         return "\n".join(lines)
 
     def save_weekly_csv(self, records: List[PouringRecord], filename: str = None) -> str:

@@ -57,12 +57,20 @@ echo     concrete-inspector info -p 示例项目_阳光花园二期
 echo.
 echo  5. 每周抽查汇总周报（给领导看，按楼栋/监理员/责任岗位统计）：
 echo     concrete-inspector weekly -p 示例项目_阳光花园二期 -s 2024-01-01 -e 2024-01-31 --format all -o ./reports
-echo     concrete-inspector weekly -p 示例项目_阳光花园二期 --format excel    （仅Excel带图表）
+echo     concrete-inspector weekly -p 示例项目_阳光花园二期 --format excel
+echo     concrete-inspector weekly -p 示例项目_阳光花园二期 -i 上周整改清单.csv   ^(导入上周CSV看闭环看板^)
 echo.
 echo  6. 问题跟踪（导入上周整改CSV，识别已整改/新增/仍未整改）：
 echo     concrete-inspector track -p 示例项目_阳光花园二期 -i 上周整改清单.csv --format all -o ./reports
 echo.
-echo  7. 按日期严格过滤（按最终识别的浇筑日期，范围外不混入）：
+echo  7. 历史趋势（查看最近几周的合格率、问题类型、关闭率变化）：
+echo     concrete-inspector trend -p 示例项目_阳光花园二期 -n 8
+echo     concrete-inspector trend -p 示例项目_阳光花园二期 --format csv -o ./reports
+echo.
+echo  8. 滚动整改清单（导出时合并上周回填，项目部继续填写）：
+echo     concrete-inspector list -p 示例项目_阳光花园二期 -i 上周整改清单.csv --format csv -o ./reports
+echo.
+echo  9. 按日期严格过滤（按最终识别的浇筑日期，范围外不混入）：
 echo     concrete-inspector check -p 示例项目_阳光花园二期 -s 2024-01-10 -e 2024-01-20
 echo.
 echo 提示：输入 concrete-inspector --help 或 concrete-inspector check --help 查看完整帮助
